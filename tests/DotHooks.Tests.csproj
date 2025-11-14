@@ -24,9 +24,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Include source files from hooks directory, excluding Program.cs -->
-    <Compile Include="../hooks/IHookPlugin.cs" Link="Shared/IHookPlugin.cs" />
-    <Compile Include="../hooks/Models.cs" Link="Shared/Models.cs" />
+    <!-- Include shared types and plugin loader from hooks directory -->
+    <Compile Include="../hooks/SharedTypes.cs" Link="Shared/SharedTypes.cs" />
     <Compile Include="../hooks/PluginLoader.cs" Link="Shared/PluginLoader.cs" />
     <Compile Include="../hooks/plugins/**/*.cs" Link="Shared/Plugins/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>

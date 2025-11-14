@@ -189,9 +189,8 @@ HookOutput AggregateOutputs(List<HookOutput> outputs)
         SystemMessage = combinedMessage
     };
 }
-
 // =============================================================================
-// MODELS (after top-level statements)
+// SHARED TYPES - Used by both Program.cs and tests
 // =============================================================================
 
 public record HookInput
@@ -243,10 +242,6 @@ public record HookOutput
     public static HookOutput WithContext(string context) => new() { Decision = "approve", Continue = true, AdditionalContext = context };
 }
 
-// =============================================================================
-// PLUGIN INTERFACE
-// =============================================================================
-
 public interface IHookPlugin
 {
     string Name { get; }
@@ -254,7 +249,7 @@ public interface IHookPlugin
 }
 
 // =============================================================================
-// PLUGIN LOADER
+// PLUGIN LOADER - Used by both Program.cs and tests
 // =============================================================================
 
 public class PluginLoader

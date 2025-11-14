@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 /// <summary>
 /// Example global plugin that logs hook event names using structured logging.
 /// </summary>

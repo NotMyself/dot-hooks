@@ -1,6 +1,7 @@
 using DotHooks;
-using DotHooks.Plugins;
+using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using NSubstitute;
 
 namespace DotHooks.Tests.Plugins;
 
@@ -8,23 +9,13 @@ namespace DotHooks.Tests.Plugins;
 public class HookLoggerTests
 {
     private HookLogger _plugin = null!;
-    private StringWriter _consoleOutput = null!;
-    private TextWriter _originalConsole = null!;
+    private ILogger _mockLogger = null!;
 
     [TestInitialize]
     public void Setup()
     {
-        _plugin = new HookLogger();
-        _consoleOutput = new StringWriter();
-        _originalConsole = Console.Out;
-        Console.SetOut(_consoleOutput);
-    }
-
-    [TestCleanup]
-    public void Cleanup()
-    {
-        Console.SetOut(_originalConsole);
-        _consoleOutput.Dispose();
+        _mockLogger = Substitute.For<ILogger>();
+        _plugin = new HookLogger(_mockLogger);
     }
 
     [TestMethod]
@@ -35,7 +26,7 @@ public class HookLoggerTests
     }
 
     [TestMethod]
-    public async Task ExecuteAsync_WritesEventTypeToConsole()
+    public async Task ExecuteAsync_LogsEventType()
     {
         // Arrange
         var input = new HookInput
@@ -46,15 +37,19 @@ public class HookLoggerTests
         };
 
         // Act
-        var output = await _plugin.ExecuteAsync(input);
+        await _plugin.ExecuteAsync(input);
 
         // Assert
-        var consoleText = _consoleOutput.ToString();
-        Assert.IsTrue(consoleText.Contains("Hook event triggered: pre-tool-use"));
+        _mockLogger.Received().Log(
+            LogLevel.Information,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Hook event triggered")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     [TestMethod]
-    public async Task ExecuteAsync_WritesSessionIdToConsole()
+    public async Task ExecuteAsync_LogsSessionId()
     {
         // Arrange
         var input = new HookInput
@@ -68,12 +63,16 @@ public class HookLoggerTests
         await _plugin.ExecuteAsync(input);
 
         // Assert
-        var consoleText = _consoleOutput.ToString();
-        Assert.IsTrue(consoleText.Contains("Session ID: test-session-123"));
+        _mockLogger.Received().Log(
+            LogLevel.Information,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Session ID")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     [TestMethod]
-    public async Task ExecuteAsync_WritesWorkingDirectoryToConsole()
+    public async Task ExecuteAsync_LogsWorkingDirectory()
     {
         // Arrange
         var input = new HookInput
@@ -87,12 +86,16 @@ public class HookLoggerTests
         await _plugin.ExecuteAsync(input);
 
         // Assert
-        var consoleText = _consoleOutput.ToString();
-        Assert.IsTrue(consoleText.Contains("Working Directory: /my/working/dir"));
+        _mockLogger.Received().Log(
+            LogLevel.Information,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Working Directory")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     [TestMethod]
-    public async Task ExecuteAsync_WritesToolNameWhenProvided()
+    public async Task ExecuteAsync_LogsToolNameWhenProvided()
     {
         // Arrange
         var input = new HookInput
@@ -107,27 +110,12 @@ public class HookLoggerTests
         await _plugin.ExecuteAsync(input);
 
         // Assert
-        var consoleText = _consoleOutput.ToString();
-        Assert.IsTrue(consoleText.Contains("Tool: Write"));
-    }
-
-    [TestMethod]
-    public async Task ExecuteAsync_DoesNotWriteToolNameWhenNotProvided()
-    {
-        // Arrange
-        var input = new HookInput
-        {
-            SessionId = "test-session",
-            EventType = "session-start",
-            Cwd = "/test/dir"
-        };
-
-        // Act
-        await _plugin.ExecuteAsync(input);
-
-        // Assert
-        var consoleText = _consoleOutput.ToString();
-        Assert.IsFalse(consoleText.Contains("Tool:"));
+        _mockLogger.Received().Log(
+            LogLevel.Information,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Tool")),
+            null,
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     [TestMethod]

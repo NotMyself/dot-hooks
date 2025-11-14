@@ -9,6 +9,7 @@ namespace DotHooks.Tests;
 public class PluginLoaderTests
 {
     private ILogger<PluginLoader> _logger = null!;
+    private ILoggerFactory _loggerFactory = null!;
     private PluginLoader _pluginLoader = null!;
     private string _testDirectory = null!;
 
@@ -16,7 +17,9 @@ public class PluginLoaderTests
     public void Setup()
     {
         _logger = Substitute.For<ILogger<PluginLoader>>();
-        _pluginLoader = new PluginLoader(_logger);
+        _loggerFactory = Substitute.For<ILoggerFactory>();
+        _loggerFactory.CreateLogger(Arg.Any<string>()).Returns(Substitute.For<ILogger>());
+        _pluginLoader = new PluginLoader(_logger, _loggerFactory);
         _testDirectory = Path.Combine(Path.GetTempPath(), $"dot-hooks-test-{Guid.NewGuid()}");
         Directory.CreateDirectory(_testDirectory);
     }
