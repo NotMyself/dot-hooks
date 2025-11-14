@@ -62,7 +62,7 @@ git commit -m "Initial commit"
 
 ## TC-02: Test Global Plugin - HookLogger
 
-**Objective**: Verify global plugin executes and logs events
+**Objective**: Verify global plugin executes and logs events to session log file
 
 **Steps**:
 1. Start Claude Code session in test project:
@@ -76,18 +76,39 @@ git commit -m "Initial commit"
    Create a file called test.txt with the content "Hello World"
    ```
 
-3. Check logs:
+3. Check session log file:
    ```bash
-   cat .claude/state/dot-hooks.log
-   ls .claude/state/session/
-   cat .claude/state/session/<session-id>.log
+   # List session directories
+   ls .claude/state/
+
+   # View session log (replace <session-id> with actual ID)
+   cat .claude/state/<session-id>/dot-hooks.log
    ```
 
 **Expected Result**:
-- Console output shows `[HookLogger]` messages
-- Logs contain hook event information
-- Session logs exist and contain event details
-- Hook events triggered: `PreToolUse`, `PostToolUse` for Write tool
+
+- Session directory created at `.claude/state/<session-id>/`
+- Log file `dot-hooks.log` exists in session directory
+- Log contains timestamped entries with:
+  - Session start marker with session ID and event type
+  - Plugin execution entries: "Executing plugin: HookLogger"
+  - Plugin completion entries with decision and continue status
+  - Event completion marker
+- Hook events triggered: `session-start`, `user-prompt-submit`, `pre-tool-use`, `post-tool-use` for Write tool
+- Log format: `[YYYY-MM-DD HH:mm:ss.fff] Message`
+
+**Example Log Output**:
+```
+[2025-11-14 21:29:02.077] Session: abc123, Event: session-start
+[2025-11-14 21:29:02.854] Executing plugin: HookLogger
+[2025-11-14 21:29:02.855] Plugin HookLogger completed: decision=approve, continue=True
+[2025-11-14 21:29:02.857] Event session-start completed successfully
+
+[2025-11-14 21:29:30.996] Session: abc123, Event: pre-tool-use
+[2025-11-14 21:29:31.755] Executing plugin: HookLogger
+[2025-11-14 21:29:31.756] Plugin HookLogger completed: decision=approve, continue=True
+[2025-11-14 21:29:31.758] Event pre-tool-use completed successfully
+```
 
 **Status**: ⬜ Pass / ⬜ Fail
 
@@ -176,34 +197,48 @@ _____________________________________________________
    mkdir -p .claude/hooks/dot-hooks
    ```
 
-2. Create test plugin `TestPlugin.cs`:
+2. Create test plugin `TestPlugin.cs` (with logger support):
    ```bash
    cat > .claude/hooks/dot-hooks/TestPlugin.cs << 'EOF'
-   using DotHooks;
-
    namespace UserPlugins;
 
-   public class TestPlugin : IHookPlugin
+   /// <summary>
+   /// Example user plugin demonstrating ILogger support.
+   /// Plugins can optionally accept ILogger in constructor.
+   /// </summary>
+   public class TestPlugin(ILogger logger) : IHookPlugin
    {
        public string Name => "TestPlugin";
 
        public Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken = default)
        {
-           Console.WriteLine($"[TestPlugin] USER PLUGIN EXECUTED: {input.EventType}");
+           logger.LogInformation("USER PLUGIN EXECUTED: {EventType}", input.EventType);
+           logger.LogInformation("Session: {SessionId}", input.SessionId);
            return Task.FromResult(HookOutput.Success());
        }
    }
    EOF
    ```
 
+   **Note**: Plugins automatically get `using Microsoft.Extensions.Logging;` injected during compilation.
+
 3. Start Claude session and trigger any action
 
-4. Check console output and logs
+4. Check console output and session log:
+
+   ```bash
+   # Console should show logger output
+   # Check session log
+   cat .claude/state/<session-id>/dot-hooks.log
+   ```
 
 **Expected Result**:
-- Console shows `[TestPlugin] USER PLUGIN EXECUTED`
+
+- Console shows logger output: `info: TestPlugin[0] USER PLUGIN EXECUTED: <event-type>`
+- Session log shows both plugins executing: "Executing plugin: HookLogger" then "Executing plugin: TestPlugin"
 - User plugin executes AFTER global plugin (HookLogger)
 - No compilation errors in logs
+- Plugin completion logged with decision and continue status
 
 **Status**: ⬜ Pass / ⬜ Fail
 
@@ -346,11 +381,10 @@ Order should be:
 **Steps**:
 
 1. Create blocking plugin:
+
    ```bash
    cat > .claude/hooks/dot-hooks/BlockingPlugin.cs << 'EOF'
-   using DotHooks;
-
-   public class BlockingPlugin : IHookPlugin
+   public class BlockingPlugin(ILogger logger) : IHookPlugin
    {
        public string Name => "BlockingPlugin";
 
@@ -358,7 +392,7 @@ Order should be:
        {
            if (input.EventType == "pre-tool-use" && input.ToolName == "Write")
            {
-               Console.WriteLine("[BlockingPlugin] BLOCKING WRITE OPERATION");
+               logger.LogWarning("BLOCKING WRITE OPERATION");
                return Task.FromResult(HookOutput.Block("Write operations are blocked for testing"));
            }
            return Task.FromResult(HookOutput.Success());
@@ -369,12 +403,19 @@ Order should be:
 
 2. Ask Claude to write a file
 
-3. Observe behavior
+3. Check session log for blocking entry:
+
+   ```bash
+   cat .claude/state/<session-id>/dot-hooks.log
+   ```
 
 **Expected Result**:
+
 - Tool execution is blocked
 - Claude receives blocking message
 - Exit code is 2 (blocking error)
+- Session log contains: `Plugin BlockingPlugin BLOCKED: Write operations are blocked for testing`
+- Console shows warning log: `warn: BlockingPlugin[0] BLOCKING WRITE OPERATION`
 
 **Status**: ⬜ Pass / ⬜ Fail
 
@@ -625,7 +666,7 @@ _________________________________________________________
 
 ## Appendix: Useful Commands
 
-### View Session State
+### View Session State and Logs
 
 ```bash
 # List all session directories
@@ -634,8 +675,35 @@ ls .claude/state/
 # View files in a specific session
 ls -la .claude/state/<session-id>/
 
-# Check console output (Claude captures plugin output)
-# Plugins write to console, which is captured by Claude Code
+# View session log file
+cat .claude/state/<session-id>/dot-hooks.log
+
+# Tail session log (follow live)
+tail -f .claude/state/<session-id>/dot-hooks.log
+
+# Search logs for specific plugin
+grep "HookLogger" .claude/state/<session-id>/dot-hooks.log
+
+# Search logs for errors
+grep "ERROR" .claude/state/<session-id>/dot-hooks.log
+
+# Search logs for blocked operations
+grep "BLOCKED" .claude/state/<session-id>/dot-hooks.log
+```
+
+**Session Log Format**:
+
+```text
+[YYYY-MM-DD HH:mm:ss.fff] Message
+```
+
+**Example Session Log**:
+
+```text
+[2025-11-14 21:29:02.077] Session: abc123, Event: session-start
+[2025-11-14 21:29:02.854] Executing plugin: HookLogger
+[2025-11-14 21:29:02.855] Plugin HookLogger completed: decision=approve, continue=True
+[2025-11-14 21:29:02.857] Event session-start completed successfully
 ```
 
 ### Clean Up Test Environment
