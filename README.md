@@ -78,33 +78,34 @@ mkdir -p .claude/hooks/dot-hooks
 Create a `.cs` file in `.claude/hooks/dot-hooks/`. Example `UserHookLogger.cs`:
 
 ```csharp
-using DotHooks;
-
 namespace MyProject.Hooks;
 
 /// <summary>
 /// User plugin that logs hook events with project context.
+/// Plugins can optionally accept an ILogger in their constructor for structured logging.
 /// </summary>
-public class UserHookLogger : IHookPlugin
+public class UserHookLogger(ILogger logger) : IHookPlugin
 {
     public string Name => "UserHookLogger";
 
     public Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken = default)
     {
-        Console.WriteLine($"[UserHookLogger] Executing from user directory");
-        Console.WriteLine($"[UserHookLogger] Event: {input.EventType}");
-        Console.WriteLine($"[UserHookLogger] Project: {input.Cwd}");
+        logger.LogInformation("Executing from user directory");
+        logger.LogInformation("Event: {EventType}", input.EventType);
+        logger.LogInformation("Project: {Cwd}", input.Cwd);
 
         // Add custom logic here
         if (input.EventType == "pre-tool-use" && input.ToolName == "Write")
         {
-            Console.WriteLine($"[UserHookLogger] About to write a file!");
+            logger.LogInformation("About to write a file!");
         }
 
         return Task.FromResult(HookOutput.Success());
     }
 }
 ```
+
+**Note**: Plugins can optionally accept an `ILogger` parameter in their constructor. If your plugin doesn't need logging, you can use a parameterless constructor instead.
 
 ### 3. Plugin Interface
 
@@ -118,7 +119,42 @@ public interface IHookPlugin
 }
 ```
 
-### 4. Input and Output Models
+### 4. Plugin Logging
+
+Plugins can optionally receive an `ILogger` instance for structured logging:
+
+**With Logger (Recommended):**
+```csharp
+public class MyPlugin(ILogger logger) : IHookPlugin
+{
+    public string Name => "MyPlugin";
+
+    public Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken)
+    {
+        logger.LogInformation("Processing event: {EventType}", input.EventType);
+        logger.LogDebug("Session: {SessionId}", input.SessionId);
+        return Task.FromResult(HookOutput.Success());
+    }
+}
+```
+
+**Without Logger:**
+```csharp
+public class SimplePlugin : IHookPlugin
+{
+    public string Name => "SimplePlugin";
+
+    public Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken)
+    {
+        Console.WriteLine("Processing event");
+        return Task.FromResult(HookOutput.Success());
+    }
+}
+```
+
+Available log levels: `LogTrace`, `LogDebug`, `LogInformation`, `LogWarning`, `LogError`, `LogCritical`
+
+### 5. Input and Output Models
 
 **HookInput** - Data received from Claude Code:
 

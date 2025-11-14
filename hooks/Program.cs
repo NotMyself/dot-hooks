@@ -255,10 +255,12 @@ public interface IHookPlugin
 public class PluginLoader
 {
     private readonly ILogger<PluginLoader> _logger;
+    private readonly ILoggerFactory _loggerFactory;
 
-    public PluginLoader(ILogger<PluginLoader> logger)
+    public PluginLoader(ILogger<PluginLoader> logger, ILoggerFactory loggerFactory)
     {
         _logger = logger;
+        _loggerFactory = loggerFactory;
     }
 
     public async Task<List<IHookPlugin>> LoadPluginsAsync(string globalPluginPath, string? userPluginPath = null)
@@ -321,6 +323,7 @@ public class PluginLoader
             var usings = @"using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 
 ";
             sourceCode = usings + sourceCode;
@@ -333,6 +336,7 @@ using System.Threading.Tasks;
             MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
             MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),
             MetadataReference.CreateFromFile(typeof(IHookPlugin).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(ILogger).Assembly.Location),
             MetadataReference.CreateFromFile(Assembly.Load("System.Runtime").Location),
             MetadataReference.CreateFromFile(Assembly.Load("System.Collections").Location),
             MetadataReference.CreateFromFile(Assembly.Load("System.Linq").Location),
@@ -381,6 +385,16 @@ using System.Threading.Tasks;
             return null;
         }
 
+        // Try to create plugin with logger if constructor accepts it
+        var pluginLogger = _loggerFactory.CreateLogger(pluginType);
+        var loggerConstructor = pluginType.GetConstructor(new[] { typeof(ILogger) });
+
+        if (loggerConstructor != null)
+        {
+            return loggerConstructor.Invoke(new object[] { pluginLogger }) as IHookPlugin;
+        }
+
+        // Fall back to parameterless constructor
         return Activator.CreateInstance(pluginType) as IHookPlugin;
     }
 }

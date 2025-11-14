@@ -1,19 +1,19 @@
 /// <summary>
-/// Example global plugin that logs hook event names.
+/// Example global plugin that logs hook event names using structured logging.
 /// </summary>
-public class HookLogger : IHookPlugin
+public class HookLogger(ILogger logger) : IHookPlugin
 {
     public string Name => "HookLogger";
 
     public Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken = default)
     {
-        Console.WriteLine($"[HookLogger] Hook event triggered: {input.EventType}");
-        Console.WriteLine($"[HookLogger] Session ID: {input.SessionId}");
-        Console.WriteLine($"[HookLogger] Working Directory: {input.Cwd}");
+        logger.LogInformation("Hook event triggered: {EventType}", input.EventType);
+        logger.LogInformation("Session ID: {SessionId}", input.SessionId);
+        logger.LogInformation("Working Directory: {Cwd}", input.Cwd);
 
         if (!string.IsNullOrEmpty(input.ToolName))
         {
-            Console.WriteLine($"[HookLogger] Tool: {input.ToolName}");
+            logger.LogInformation("Tool: {ToolName}", input.ToolName);
         }
 
         return Task.FromResult(HookOutput.Success());
