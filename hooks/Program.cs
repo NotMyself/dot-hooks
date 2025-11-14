@@ -22,7 +22,11 @@ using System.Runtime.Loader;
 var services = new ServiceCollection();
 services.AddLogging(builder =>
 {
-    builder.AddConsole();
+    builder.AddConsole(options =>
+    {
+        // Force all console output to stderr to keep stdout clean for HookOutput JSON
+        options.LogToStandardErrorThreshold = LogLevel.Trace;
+    });
     builder.SetMinimumLevel(LogLevel.Information);
 });
 services.AddSingleton<PluginLoader>();
@@ -111,11 +115,16 @@ async Task<int> HandleHookEventAsync(string eventName)
             : Path.Combine(Directory.GetCurrentDirectory(), ".claude", "state");
 
         string? sessionLogFile = null;
+        string? pluginLogDirectory = null;
         if (!string.IsNullOrEmpty(input.SessionId))
         {
             var sessionDirectory = Path.Combine(stateDirectory, input.SessionId);
             Directory.CreateDirectory(sessionDirectory);
             sessionLogFile = Path.Combine(sessionDirectory, "dot-hooks.log");
+
+            // Create plugins subdirectory for per-plugin logs
+            pluginLogDirectory = Path.Combine(sessionDirectory, "plugins");
+            Directory.CreateDirectory(pluginLogDirectory);
 
             // Write session start marker to log
             await File.AppendAllTextAsync(sessionLogFile,
@@ -127,22 +136,57 @@ async Task<int> HandleHookEventAsync(string eventName)
         var outputs = new List<HookOutput>();
         foreach (var plugin in plugins)
         {
+            // Per-plugin log file
+            string? pluginLogFile = null;
+            if (pluginLogDirectory != null)
+            {
+                pluginLogFile = Path.Combine(pluginLogDirectory, $"{plugin.Name}.log");
+            }
+
             try
             {
+                var timestamp = DateTime.UtcNow;
                 logger.LogDebug("Executing plugin: {PluginName}", plugin.Name);
+
+                // Write to main session log
                 if (sessionLogFile != null)
                 {
                     await File.AppendAllTextAsync(sessionLogFile,
-                        $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Executing plugin: {plugin.Name}\n");
+                        $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff}] Executing plugin: {plugin.Name}\n");
+                }
+
+                // Write to per-plugin log
+                if (pluginLogFile != null)
+                {
+                    await File.AppendAllTextAsync(pluginLogFile,
+                        $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff}] Event: {eventName}\n");
+                    await File.AppendAllTextAsync(pluginLogFile,
+                        $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff}] Session: {input.SessionId}\n");
+                    if (!string.IsNullOrEmpty(input.ToolName))
+                    {
+                        await File.AppendAllTextAsync(pluginLogFile,
+                            $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff}] Tool: {input.ToolName}\n");
+                    }
                 }
 
                 var output = await plugin.ExecuteAsync(input, CancellationToken.None);
                 outputs.Add(output);
 
+                var completionTimestamp = DateTime.UtcNow;
+                var duration = (completionTimestamp - timestamp).TotalMilliseconds;
+
+                // Write to main session log
                 if (sessionLogFile != null)
                 {
                     await File.AppendAllTextAsync(sessionLogFile,
-                        $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Plugin {plugin.Name} completed: decision={output.Decision}, continue={output.Continue}\n");
+                        $"[{completionTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Plugin {plugin.Name} completed: decision={output.Decision}, continue={output.Continue}\n");
+                }
+
+                // Write to per-plugin log
+                if (pluginLogFile != null)
+                {
+                    await File.AppendAllTextAsync(pluginLogFile,
+                        $"[{completionTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Completed: decision={output.Decision}, continue={output.Continue}, duration={duration:F2}ms\n\n");
                 }
 
                 if (!output.Continue || output.Decision == "block")
@@ -153,7 +197,13 @@ async Task<int> HandleHookEventAsync(string eventName)
                     if (sessionLogFile != null)
                     {
                         await File.AppendAllTextAsync(sessionLogFile,
-                            $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Plugin {plugin.Name} BLOCKED: {output.StopReason}\n");
+                            $"[{completionTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Plugin {plugin.Name} BLOCKED: {output.StopReason}\n");
+                    }
+
+                    if (pluginLogFile != null)
+                    {
+                        await File.AppendAllTextAsync(pluginLogFile,
+                            $"[{completionTimestamp:yyyy-MM-dd HH:mm:ss.fff}] BLOCKED: {output.StopReason}\n\n");
                     }
 
                     var blockingJson = JsonSerializer.Serialize(output, jsonOptions);
@@ -163,11 +213,21 @@ async Task<int> HandleHookEventAsync(string eventName)
             }
             catch (Exception ex)
             {
+                var errorTimestamp = DateTime.UtcNow;
                 logger.LogError(ex, "Plugin {PluginName} threw an exception", plugin.Name);
+
                 if (sessionLogFile != null)
                 {
                     await File.AppendAllTextAsync(sessionLogFile,
-                        $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Plugin {plugin.Name} ERROR: {ex.Message}\n");
+                        $"[{errorTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Plugin {plugin.Name} ERROR: {ex.Message}\n");
+                }
+
+                if (pluginLogFile != null)
+                {
+                    await File.AppendAllTextAsync(pluginLogFile,
+                        $"[{errorTimestamp:yyyy-MM-dd HH:mm:ss.fff}] ERROR: {ex.Message}\n");
+                    await File.AppendAllTextAsync(pluginLogFile,
+                        $"[{errorTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Stack trace: {ex.StackTrace}\n\n");
                 }
             }
         }

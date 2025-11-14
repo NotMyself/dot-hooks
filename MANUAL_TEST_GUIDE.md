@@ -76,28 +76,37 @@ git commit -m "Initial commit"
    Create a file called test.txt with the content "Hello World"
    ```
 
-3. Check session log file:
+3. Check session log files:
    ```bash
    # List session directories
    ls .claude/state/
 
-   # View session log (replace <session-id> with actual ID)
+   # View main session log (replace <session-id> with actual ID)
    cat .claude/state/<session-id>/dot-hooks.log
+
+   # Check per-plugin logs directory
+   ls .claude/state/<session-id>/plugins/
+
+   # View HookLogger's individual log
+   cat .claude/state/<session-id>/plugins/HookLogger.log
    ```
 
 **Expected Result**:
 
 - Session directory created at `.claude/state/<session-id>/`
-- Log file `dot-hooks.log` exists in session directory
+- Main log file `dot-hooks.log` exists with consolidated plugin execution flow
+- `plugins/` subdirectory exists with individual plugin logs
+- `plugins/HookLogger.log` contains per-plugin execution details
 - Log contains timestamped entries with:
   - Session start marker with session ID and event type
   - Plugin execution entries: "Executing plugin: HookLogger"
-  - Plugin completion entries with decision and continue status
+  - Plugin completion entries with decision, continue status, and execution duration
   - Event completion marker
 - Hook events triggered: `session-start`, `user-prompt-submit`, `pre-tool-use`, `post-tool-use` for Write tool
 - Log format: `[YYYY-MM-DD HH:mm:ss.fff] Message`
+- Per-plugin logs include event type, session ID, tool name (if applicable), and execution duration
 
-**Example Log Output**:
+**Example Main Log Output (dot-hooks.log)**:
 ```
 [2025-11-14 21:29:02.077] Session: abc123, Event: session-start
 [2025-11-14 21:29:02.854] Executing plugin: HookLogger
@@ -108,6 +117,19 @@ git commit -m "Initial commit"
 [2025-11-14 21:29:31.755] Executing plugin: HookLogger
 [2025-11-14 21:29:31.756] Plugin HookLogger completed: decision=approve, continue=True
 [2025-11-14 21:29:31.758] Event pre-tool-use completed successfully
+```
+
+**Example Per-Plugin Log (plugins/HookLogger.log)**:
+```
+[2025-11-14 21:29:02.854] Event: session-start
+[2025-11-14 21:29:02.854] Session: abc123
+[2025-11-14 21:29:02.855] Completed: decision=approve, continue=True, duration=1.23ms
+
+[2025-11-14 21:29:31.755] Event: pre-tool-use
+[2025-11-14 21:29:31.755] Session: abc123
+[2025-11-14 21:29:31.755] Tool: Write
+[2025-11-14 21:29:31.756] Completed: decision=approve, continue=True, duration=1.05ms
+
 ```
 
 **Status**: ⬜ Pass / ⬜ Fail
@@ -260,12 +282,12 @@ _____________________________________________________
    # Plugin A
    cat > .claude/hooks/dot-hooks/APlugin.cs << 'EOF'
    using DotHooks;
-   public class APlugin : IHookPlugin
+   public class APlugin(ILogger logger) : IHookPlugin
    {
        public string Name => "APlugin";
        public Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken = default)
        {
-           Console.WriteLine("[APlugin] Executing");
+           logger.LogInformation("Executing");
            return Task.FromResult(HookOutput.Success());
        }
    }
@@ -274,12 +296,12 @@ _____________________________________________________
    # Plugin Z
    cat > .claude/hooks/dot-hooks/ZPlugin.cs << 'EOF'
    using DotHooks;
-   public class ZPlugin : IHookPlugin
+   public class ZPlugin(ILogger logger) : IHookPlugin
    {
        public string Name => "ZPlugin";
        public Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken = default)
        {
-           Console.WriteLine("[ZPlugin] Executing");
+           logger.LogInformation("Executing");
            return Task.FromResult(HookOutput.Success());
        }
    }
@@ -561,14 +583,14 @@ _____________________________________________________
    using DotHooks;
    using System.Text.Json;
 
-   public class JsonPlugin : IHookPlugin
+   public class JsonPlugin(ILogger logger) : IHookPlugin
    {
        public string Name => "JsonPlugin";
 
        public Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken = default)
        {
            var json = JsonSerializer.Serialize(new { plugin = "JsonPlugin", event = input.EventType });
-           Console.WriteLine($"[JsonPlugin] {json}");
+           logger.LogInformation("{Json}", json);
            return Task.FromResult(HookOutput.Success());
        }
    }
@@ -675,20 +697,36 @@ ls .claude/state/
 # View files in a specific session
 ls -la .claude/state/<session-id>/
 
-# View session log file
+# List per-plugin logs
+ls .claude/state/<session-id>/plugins/
+
+# View main session log (all plugins, consolidated)
 cat .claude/state/<session-id>/dot-hooks.log
 
-# Tail session log (follow live)
+# View individual plugin log
+cat .claude/state/<session-id>/plugins/HookLogger.log
+cat .claude/state/<session-id>/plugins/TestPlugin.log
+
+# Tail main session log (follow live)
 tail -f .claude/state/<session-id>/dot-hooks.log
 
-# Search logs for specific plugin
+# Tail specific plugin log (follow live)
+tail -f .claude/state/<session-id>/plugins/HookLogger.log
+
+# Search main log for specific plugin
 grep "HookLogger" .claude/state/<session-id>/dot-hooks.log
 
-# Search logs for errors
+# Search main log for errors
 grep "ERROR" .claude/state/<session-id>/dot-hooks.log
 
-# Search logs for blocked operations
+# Search main log for blocked operations
 grep "BLOCKED" .claude/state/<session-id>/dot-hooks.log
+
+# Search specific plugin log for errors
+grep "ERROR" .claude/state/<session-id>/plugins/YourPlugin.log
+
+# View plugin execution times
+grep "duration" .claude/state/<session-id>/plugins/*.log
 ```
 
 **Session Log Format**:

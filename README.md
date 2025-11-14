@@ -32,8 +32,23 @@ After installation, dot-hooks will automatically execute on Claude Code hook eve
 
 ### View Logs
 
-Session state is stored in your project at:
-- Session directory: `.claude/state/<session-id>/` - Each session gets its own directory where plugins can write logs and state files
+Session state and logs are stored in your project:
+
+```
+.claude/state/<session-id>/
+├── dot-hooks.log              # Main session log (all plugins)
+└── plugins/
+    ├── HookLogger.log         # Per-plugin execution log
+    └── YourPlugin.log         # Individual plugin logs
+```
+
+**Log Types:**
+- **Main Session Log** (`dot-hooks.log`): Consolidated view of all hook events and plugin executions
+- **Per-Plugin Logs** (`plugins/*.log`): Individual plugin execution history with event context, execution time, and errors
+
+All logs use UTC timestamps in ISO format: `[YYYY-MM-DD HH:mm:ss.fff]`
+
+**Important:** Console logging goes to stderr only. Stdout is reserved for HookOutput JSON responses.
 
 ## Architecture
 
