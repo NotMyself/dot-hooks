@@ -84,15 +84,17 @@ async Task<int> HandleHookEventAsync(string eventName)
             ? Path.Combine(input.Cwd, ".claude", "hooks", "dot-hooks")
             : null;
 
-        // Setup logging to file
-        var logDirectory = !string.IsNullOrEmpty(input.Cwd)
+        // Setup logging to session directory
+        var stateDirectory = !string.IsNullOrEmpty(input.Cwd)
             ? Path.Combine(input.Cwd, ".claude", "state")
             : Path.Combine(Directory.GetCurrentDirectory(), ".claude", "state");
 
-        Directory.CreateDirectory(logDirectory);
-
-        var sessionLogDirectory = Path.Combine(logDirectory, "session");
-        Directory.CreateDirectory(sessionLogDirectory);
+        // Create session-specific directory
+        if (!string.IsNullOrEmpty(input.SessionId))
+        {
+            var sessionDirectory = Path.Combine(stateDirectory, input.SessionId);
+            Directory.CreateDirectory(sessionDirectory);
+        }
 
         // Load plugins
         var plugins = await pluginLoader.LoadPluginsAsync(globalPluginPath, userPluginPath);

@@ -625,17 +625,17 @@ _________________________________________________________
 
 ## Appendix: Useful Commands
 
-### View Logs
+### View Session State
+
 ```bash
-# General logs
-cat .claude/state/dot-hooks.log
+# List all session directories
+ls .claude/state/
 
-# Session logs
-ls .claude/state/session/
-cat .claude/state/session/<session-id>.log
+# View files in a specific session
+ls -la .claude/state/<session-id>/
 
-# Watch logs in real-time
-tail -f .claude/state/dot-hooks.log
+# Check console output (Claude captures plugin output)
+# Plugins write to console, which is captured by Claude Code
 ```
 
 ### Clean Up Test Environment

@@ -60,9 +60,8 @@ user-project/
 │   │   └── dot-hooks/
 │   │       └── UserHookLogger.cs  # User's custom plugin
 │   └── state/
-│       ├── dot-hooks.log          # General logs
-│       └── session/
-│           └── <session-id>.log   # Session-specific logs
+│       └── <session-id>/          # Session-specific directory
+│           └── (plugin logs and state files)
 ├── src/
 └── ...
 ```
@@ -153,9 +152,8 @@ public interface IHookPlugin
 
 ## Logging Strategy
 
-### Log Locations
-- **Session logs**: `<project>/.claude/state/session/<session-id>.log`
-- **General logs**: `<project>/.claude/state/dot-hooks.log`
+### Session State Directory
+- **Session directory**: `<project>/.claude/state/<session-id>/` - Each session gets its own directory where plugins can write logs and state files
 
 ### Log Levels
 - Debug: Plugin discovery, compilation details

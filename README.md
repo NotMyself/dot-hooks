@@ -32,9 +32,8 @@ After installation, dot-hooks will automatically execute on Claude Code hook eve
 
 ### View Logs
 
-Session logs are stored in your project at:
-- Session logs: `.claude/state/session/<session-id>.log`
-- General logs: `.claude/state/dot-hooks.log`
+Session state is stored in your project at:
+- Session directory: `.claude/state/<session-id>/` - Each session gets its own directory where plugins can write logs and state files
 
 ## Architecture
 
@@ -348,9 +347,8 @@ dot-hooks/
 
 ## Logging
 
-Logs are written to:
-- **Session logs**: `<project>/.claude/state/session/<session-id>.log`
-- **General logs**: `<project>/.claude/state/dot-hooks.log`
+Session state directory:
+- **Session directory**: `<project>/.claude/state/<session-id>/` - Each session gets its own directory where plugins can write logs and state files
 
 Adjust log level by modifying `Program.cs`:
 
@@ -364,7 +362,7 @@ builder.SetMinimumLevel(LogLevel.Debug); // Information, Debug, Trace, etc.
 
 1. Check file is in correct directory: `.claude/hooks/dot-hooks/*.cs`
 2. Verify file implements `IHookPlugin` interface
-3. Check logs in `.claude/state/dot-hooks.log`
+3. Check logs in `.claude/state/<session-id>/`
 4. Ensure .NET 10 SDK is installed
 
 ### Compilation Errors
@@ -372,7 +370,10 @@ builder.SetMinimumLevel(LogLevel.Debug); // Information, Debug, Trace, etc.
 Check logs for Roslyn compilation errors:
 
 ```bash
-cat .claude/state/dot-hooks.log | grep "Compilation error"
+# List session directories
+ls .claude/state/
+
+# Check latest session for errors (plugins write to console which Claude captures)
 ```
 
 Common issues:
