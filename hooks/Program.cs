@@ -110,10 +110,16 @@ async Task<int> HandleHookEventAsync(string eventName)
             ? Path.Combine(input.Cwd, ".claude", "state")
             : Path.Combine(Directory.GetCurrentDirectory(), ".claude", "state");
 
+        string? sessionLogFile = null;
         if (!string.IsNullOrEmpty(input.SessionId))
         {
             var sessionDirectory = Path.Combine(stateDirectory, input.SessionId);
             Directory.CreateDirectory(sessionDirectory);
+            sessionLogFile = Path.Combine(sessionDirectory, "dot-hooks.log");
+
+            // Write session start marker to log
+            await File.AppendAllTextAsync(sessionLogFile,
+                $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Session: {input.SessionId}, Event: {eventName}\n");
         }
 
         var plugins = await pluginLoader.LoadPluginsAsync(globalPluginPath, userPluginPath);
@@ -124,13 +130,31 @@ async Task<int> HandleHookEventAsync(string eventName)
             try
             {
                 logger.LogDebug("Executing plugin: {PluginName}", plugin.Name);
+                if (sessionLogFile != null)
+                {
+                    await File.AppendAllTextAsync(sessionLogFile,
+                        $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Executing plugin: {plugin.Name}\n");
+                }
+
                 var output = await plugin.ExecuteAsync(input, CancellationToken.None);
                 outputs.Add(output);
+
+                if (sessionLogFile != null)
+                {
+                    await File.AppendAllTextAsync(sessionLogFile,
+                        $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Plugin {plugin.Name} completed: decision={output.Decision}, continue={output.Continue}\n");
+                }
 
                 if (!output.Continue || output.Decision == "block")
                 {
                     logger.LogWarning("Plugin {PluginName} blocked execution: {Reason}",
                         plugin.Name, output.StopReason);
+
+                    if (sessionLogFile != null)
+                    {
+                        await File.AppendAllTextAsync(sessionLogFile,
+                            $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Plugin {plugin.Name} BLOCKED: {output.StopReason}\n");
+                    }
 
                     var blockingJson = JsonSerializer.Serialize(output, jsonOptions);
                     await Console.Out.WriteAsync(blockingJson);
@@ -140,6 +164,11 @@ async Task<int> HandleHookEventAsync(string eventName)
             catch (Exception ex)
             {
                 logger.LogError(ex, "Plugin {PluginName} threw an exception", plugin.Name);
+                if (sessionLogFile != null)
+                {
+                    await File.AppendAllTextAsync(sessionLogFile,
+                        $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Plugin {plugin.Name} ERROR: {ex.Message}\n");
+                }
             }
         }
 
@@ -148,6 +177,13 @@ async Task<int> HandleHookEventAsync(string eventName)
         await Console.Out.WriteAsync(outputJson);
 
         logger.LogInformation("Hook event {EventName} completed successfully", eventName);
+
+        if (sessionLogFile != null)
+        {
+            await File.AppendAllTextAsync(sessionLogFile,
+                $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Event {eventName} completed successfully\n\n");
+        }
+
         return 0;
     }
     catch (Exception ex)
