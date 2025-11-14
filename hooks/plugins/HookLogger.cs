@@ -1,7 +1,3 @@
-using DotHooks;
-
-namespace DotHooks.Plugins;
-
 /// <summary>
 /// Example global plugin that logs hook event names.
 /// </summary>

@@ -6,11 +6,18 @@
 
 using System.CommandLine;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using DotHooks;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using System.Reflection;
+using System.Runtime.Loader;
 
-// Setup dependency injection
+// =============================================================================
+// MAIN PROGRAM (must be first - top-level statements)
+// =============================================================================
+
 var services = new ServiceCollection();
 services.AddLogging(builder =>
 {
@@ -23,14 +30,27 @@ var serviceProvider = services.BuildServiceProvider();
 var logger = serviceProvider.GetRequiredService<ILogger<Program>>();
 var pluginLoader = serviceProvider.GetRequiredService<PluginLoader>();
 
-// Get plugin root path from environment variable
-var pluginRoot = Environment.GetEnvironmentVariable("CLAUDE_PLUGIN_ROOT") ?? Directory.GetCurrentDirectory();
+// Determine plugin root - if env var not set and we're in hooks dir, go up one level
+var pluginRoot = Environment.GetEnvironmentVariable("CLAUDE_PLUGIN_ROOT");
+if (string.IsNullOrEmpty(pluginRoot))
+{
+    var currentDir = Directory.GetCurrentDirectory();
+    // If current directory ends with "hooks", go up one level
+    pluginRoot = Path.GetFileName(currentDir) == "hooks"
+        ? Path.GetDirectoryName(currentDir) ?? currentDir
+        : currentDir;
+}
+
 var globalPluginPath = Path.Combine(pluginRoot, "hooks", "plugins");
 
-// Setup root command
+// JSON serializer options with reflection enabled
+var jsonOptions = new JsonSerializerOptions
+{
+    TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver()
+};
+
 var rootCommand = new RootCommand("dot-hooks - Claude Code Hooks Plugin");
 
-// Create hook event commands
 var hookEvents = new[]
 {
     "pre-tool-use",
@@ -51,7 +71,6 @@ foreach (var eventName in hookEvents)
     rootCommand.AddCommand(command);
 }
 
-// Parse and invoke
 return await rootCommand.InvokeAsync(args);
 
 async Task<int> HandleHookEventAsync(string eventName)
@@ -60,7 +79,6 @@ async Task<int> HandleHookEventAsync(string eventName)
     {
         logger.LogInformation("Processing hook event: {EventName}", eventName);
 
-        // Read input from stdin
         string inputJson;
         using (var reader = new StreamReader(Console.OpenStandardInput()))
         {
@@ -70,7 +88,7 @@ async Task<int> HandleHookEventAsync(string eventName)
         HookInput input;
         try
         {
-            input = JsonSerializer.Deserialize<HookInput>(inputJson) ?? new HookInput();
+            input = JsonSerializer.Deserialize<HookInput>(inputJson, jsonOptions) ?? new HookInput();
             input = input with { EventType = eventName };
         }
         catch (JsonException ex)
@@ -79,27 +97,22 @@ async Task<int> HandleHookEventAsync(string eventName)
             input = new HookInput { EventType = eventName };
         }
 
-        // Determine user plugin path
         var userPluginPath = !string.IsNullOrEmpty(input.Cwd)
             ? Path.Combine(input.Cwd, ".claude", "hooks", "dot-hooks")
             : null;
 
-        // Setup logging to session directory
         var stateDirectory = !string.IsNullOrEmpty(input.Cwd)
             ? Path.Combine(input.Cwd, ".claude", "state")
             : Path.Combine(Directory.GetCurrentDirectory(), ".claude", "state");
 
-        // Create session-specific directory
         if (!string.IsNullOrEmpty(input.SessionId))
         {
             var sessionDirectory = Path.Combine(stateDirectory, input.SessionId);
             Directory.CreateDirectory(sessionDirectory);
         }
 
-        // Load plugins
         var plugins = await pluginLoader.LoadPluginsAsync(globalPluginPath, userPluginPath);
 
-        // Execute plugins
         var outputs = new List<HookOutput>();
         foreach (var plugin in plugins)
         {
@@ -109,42 +122,34 @@ async Task<int> HandleHookEventAsync(string eventName)
                 var output = await plugin.ExecuteAsync(input, CancellationToken.None);
                 outputs.Add(output);
 
-                // Check for blocking output
                 if (!output.Continue || output.Decision == "block")
                 {
                     logger.LogWarning("Plugin {PluginName} blocked execution: {Reason}",
                         plugin.Name, output.StopReason);
 
-                    // Write blocking output
-                    var blockingJson = JsonSerializer.Serialize(output);
+                    var blockingJson = JsonSerializer.Serialize(output, jsonOptions);
                     await Console.Out.WriteAsync(blockingJson);
-                    return 2; // Blocking error code
+                    return 2;
                 }
             }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Plugin {PluginName} threw an exception", plugin.Name);
-                // Continue with other plugins
             }
         }
 
-        // Aggregate outputs (combine all successful outputs)
         var aggregatedOutput = AggregateOutputs(outputs);
-
-        // Write output to stdout
-        var outputJson = JsonSerializer.Serialize(aggregatedOutput);
+        var outputJson = JsonSerializer.Serialize(aggregatedOutput, jsonOptions);
         await Console.Out.WriteAsync(outputJson);
 
         logger.LogInformation("Hook event {EventName} completed successfully", eventName);
-        return 0; // Success
+        return 0;
     }
     catch (Exception ex)
     {
         logger.LogError(ex, "Unhandled exception in hook event {EventName}", eventName);
-
-        // Write error to stderr (will be sent to Claude)
         await Console.Error.WriteLineAsync($"Error: {ex.Message}");
-        return 2; // Blocking error
+        return 2;
     }
 }
 
@@ -153,7 +158,6 @@ HookOutput AggregateOutputs(List<HookOutput> outputs)
     if (outputs.Count == 0)
         return HookOutput.Success();
 
-    // Combine additional context from all plugins
     var allContext = outputs
         .Where(o => !string.IsNullOrEmpty(o.AdditionalContext))
         .Select(o => o.AdditionalContext)
@@ -163,7 +167,6 @@ HookOutput AggregateOutputs(List<HookOutput> outputs)
         ? string.Join("\n\n", allContext)
         : null;
 
-    // Combine system messages
     var allMessages = outputs
         .Where(o => !string.IsNullOrEmpty(o.SystemMessage))
         .Select(o => o.SystemMessage)
@@ -180,4 +183,204 @@ HookOutput AggregateOutputs(List<HookOutput> outputs)
         AdditionalContext = combinedContext,
         SystemMessage = combinedMessage
     };
+}
+
+// =============================================================================
+// MODELS (after top-level statements)
+// =============================================================================
+
+public record HookInput
+{
+    [JsonPropertyName("session_id")]
+    public string SessionId { get; init; } = string.Empty;
+
+    [JsonPropertyName("transcript_path")]
+    public string TranscriptPath { get; init; } = string.Empty;
+
+    [JsonPropertyName("cwd")]
+    public string Cwd { get; init; } = string.Empty;
+
+    [JsonPropertyName("permission_mode")]
+    public string PermissionMode { get; init; } = string.Empty;
+
+    [JsonPropertyName("event_type")]
+    public string EventType { get; init; } = string.Empty;
+
+    [JsonPropertyName("tool_name")]
+    public string? ToolName { get; init; }
+
+    [JsonPropertyName("tool_parameters")]
+    public Dictionary<string, object>? ToolParameters { get; init; }
+
+    [JsonPropertyName("additional_data")]
+    public Dictionary<string, object>? AdditionalData { get; init; }
+}
+
+public record HookOutput
+{
+    [JsonPropertyName("decision")]
+    public string? Decision { get; init; }
+
+    [JsonPropertyName("continue")]
+    public bool Continue { get; init; } = true;
+
+    [JsonPropertyName("stopReason")]
+    public string? StopReason { get; init; }
+
+    [JsonPropertyName("systemMessage")]
+    public string? SystemMessage { get; init; }
+
+    [JsonPropertyName("additionalContext")]
+    public string? AdditionalContext { get; init; }
+
+    public static HookOutput Success() => new() { Decision = "approve", Continue = true };
+    public static HookOutput Block(string reason) => new() { Decision = "block", Continue = false, StopReason = reason };
+    public static HookOutput WithContext(string context) => new() { Decision = "approve", Continue = true, AdditionalContext = context };
+}
+
+// =============================================================================
+// PLUGIN INTERFACE
+// =============================================================================
+
+public interface IHookPlugin
+{
+    string Name { get; }
+    Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken = default);
+}
+
+// =============================================================================
+// PLUGIN LOADER
+// =============================================================================
+
+public class PluginLoader
+{
+    private readonly ILogger<PluginLoader> _logger;
+
+    public PluginLoader(ILogger<PluginLoader> logger)
+    {
+        _logger = logger;
+    }
+
+    public async Task<List<IHookPlugin>> LoadPluginsAsync(string globalPluginPath, string? userPluginPath = null)
+    {
+        var plugins = new List<IHookPlugin>();
+
+        if (Directory.Exists(globalPluginPath))
+        {
+            _logger.LogDebug("Loading global plugins from: {Path}", globalPluginPath);
+            var globalPlugins = await LoadPluginsFromDirectoryAsync(globalPluginPath);
+            plugins.AddRange(globalPlugins);
+        }
+
+        if (!string.IsNullOrEmpty(userPluginPath) && Directory.Exists(userPluginPath))
+        {
+            _logger.LogDebug("Loading user plugins from: {Path}", userPluginPath);
+            var userPlugins = await LoadPluginsFromDirectoryAsync(userPluginPath);
+            plugins.AddRange(userPlugins);
+        }
+
+        _logger.LogInformation("Loaded {Count} plugin(s)", plugins.Count);
+        return plugins;
+    }
+
+    private async Task<List<IHookPlugin>> LoadPluginsFromDirectoryAsync(string directory)
+    {
+        var plugins = new List<IHookPlugin>();
+        var sourceFiles = Directory.GetFiles(directory, "*.cs", SearchOption.TopDirectoryOnly)
+            .OrderBy(f => f)
+            .ToList();
+
+        foreach (var sourceFile in sourceFiles)
+        {
+            try
+            {
+                _logger.LogDebug("Compiling plugin: {File}", Path.GetFileName(sourceFile));
+                var plugin = await CompileAndLoadPluginAsync(sourceFile);
+                if (plugin != null)
+                {
+                    plugins.Add(plugin);
+                    _logger.LogInformation("Loaded plugin: {Name}", plugin.Name);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to load plugin from {File}", sourceFile);
+            }
+        }
+
+        return plugins;
+    }
+
+    private async Task<IHookPlugin?> CompileAndLoadPluginAsync(string sourceFile)
+    {
+        var sourceCode = await File.ReadAllTextAsync(sourceFile);
+
+        // Prepend implicit usings if not already present
+        if (!sourceCode.Contains("using System;"))
+        {
+            var usings = @"using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+";
+            sourceCode = usings + sourceCode;
+        }
+
+        var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode, new CSharpParseOptions(LanguageVersion.CSharp12));
+
+        var references = new List<MetadataReference>
+        {
+            MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(IHookPlugin).Assembly.Location),
+            MetadataReference.CreateFromFile(Assembly.Load("System.Runtime").Location),
+            MetadataReference.CreateFromFile(Assembly.Load("System.Collections").Location),
+            MetadataReference.CreateFromFile(Assembly.Load("System.Linq").Location),
+            MetadataReference.CreateFromFile(Assembly.Load("System.Threading.Tasks").Location),
+        };
+
+        try
+        {
+            references.Add(MetadataReference.CreateFromFile(Assembly.Load("System.Text.Json").Location));
+        }
+        catch { }
+
+        var compilation = CSharpCompilation.Create(
+            assemblyName: Path.GetFileNameWithoutExtension(sourceFile),
+            syntaxTrees: new[] { syntaxTree },
+            references: references,
+            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        using var ms = new MemoryStream();
+        var result = compilation.Emit(ms);
+
+        if (!result.Success)
+        {
+            var failures = result.Diagnostics.Where(diagnostic =>
+                diagnostic.IsWarningAsError ||
+                diagnostic.Severity == DiagnosticSeverity.Error);
+
+            foreach (var diagnostic in failures)
+            {
+                _logger.LogError("Compilation error in {File}: {Error}",
+                    Path.GetFileName(sourceFile), diagnostic.GetMessage());
+            }
+
+            return null;
+        }
+
+        ms.Seek(0, SeekOrigin.Begin);
+        var assembly = AssemblyLoadContext.Default.LoadFromStream(ms);
+
+        var pluginType = assembly.GetTypes()
+            .FirstOrDefault(t => typeof(IHookPlugin).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract);
+
+        if (pluginType == null)
+        {
+            _logger.LogWarning("No IHookPlugin implementation found in {File}", Path.GetFileName(sourceFile));
+            return null;
+        }
+
+        return Activator.CreateInstance(pluginType) as IHookPlugin;
+    }
 }
