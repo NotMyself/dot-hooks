@@ -61,7 +61,10 @@ user-project/
 │   │       └── UserHookLogger.cs  # User's custom plugin
 │   └── state/
 │       └── <session-id>/          # Session-specific directory
-│           └── (plugin logs and state files)
+│           ├── dot-hooks.log      # Main session log (all plugins)
+│           └── plugins/           # Per-plugin execution logs
+│               ├── HookLogger.log
+│               └── UserHookLogger.log
 ├── src/
 └── ...
 ```
@@ -115,6 +118,37 @@ public interface IHookPlugin
 }
 ```
 
+### Plugin Logging
+
+Plugins can optionally accept an `ILogger` instance via constructor injection:
+
+```csharp
+// With logger (recommended)
+public class MyPlugin(ILogger logger) : IHookPlugin
+{
+    public string Name => "MyPlugin";
+
+    public Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken)
+    {
+        logger.LogInformation("Processing {EventType}", input.EventType);
+        return Task.FromResult(HookOutput.Success());
+    }
+}
+
+// Without logger (fallback)
+public class SimplePlugin : IHookPlugin
+{
+    public string Name => "SimplePlugin";
+
+    public Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken)
+    {
+        return Task.FromResult(HookOutput.Success());
+    }
+}
+```
+
+The plugin loader automatically detects and injects loggers using `ILoggerFactory.CreateLogger(Type)`.
+
 ## Data Models
 
 ### HookInput
@@ -152,14 +186,81 @@ public interface IHookPlugin
 
 ## Logging Strategy
 
-### Session State Directory
-- **Session directory**: `<project>/.claude/state/<session-id>/` - Each session gets its own directory where plugins can write logs and state files
+### Console Output Separation
+
+**Critical**: Console logging is written to **stderr only**. Stdout is reserved exclusively for HookOutput JSON responses to Claude Code.
+
+```csharp
+services.AddLogging(builder =>
+{
+    builder.AddConsole(options =>
+    {
+        // Force all console output to stderr
+        options.LogToStandardErrorThreshold = LogLevel.Trace;
+    });
+    builder.SetMinimumLevel(LogLevel.Information);
+});
+```
+
+### Session Log Files
+
+Each Claude Code session creates two types of log files:
+
+#### 1. Main Session Log (`dot-hooks.log`)
+- **Location**: `<project>/.claude/state/<session-id>/dot-hooks.log`
+- **Purpose**: Consolidated view of all hook events and plugin executions
+- **Format**: UTC timestamps in ISO format `[YYYY-MM-DD HH:mm:ss.fff]`
+- **Contents**:
+  - Session start/end markers
+  - Hook event triggers
+  - Plugin execution sequence
+  - Plugin completion status (decision, continue)
+  - Blocking events
+  - Errors and exceptions
+
+**Example**:
+```
+[2025-11-14 21:29:02.077] Session: abc123, Event: session-start
+[2025-11-14 21:29:02.854] Executing plugin: HookLogger
+[2025-11-14 21:29:02.855] Plugin HookLogger completed: decision=approve, continue=True
+[2025-11-14 21:29:02.857] Event session-start completed successfully
+```
+
+#### 2. Per-Plugin Logs (`plugins/<PluginName>.log`)
+- **Location**: `<project>/.claude/state/<session-id>/plugins/<PluginName>.log`
+- **Purpose**: Individual plugin execution history and performance tracking
+- **Format**: UTC timestamps in ISO format `[YYYY-MM-DD HH:mm:ss.fff]`
+- **Contents**:
+  - Event type and session ID
+  - Tool name (when applicable)
+  - Execution duration in milliseconds
+  - Plugin-specific decisions
+  - Full error details with stack traces
+  - Blocking reasons
+
+**Example**:
+```
+[2025-11-14 21:29:31.755] Event: pre-tool-use
+[2025-11-14 21:29:31.755] Session: abc123
+[2025-11-14 21:29:31.755] Tool: Write
+[2025-11-14 21:29:31.756] Completed: decision=approve, continue=True, duration=1.05ms
+
+```
 
 ### Log Levels
-- Debug: Plugin discovery, compilation details
-- Info: Hook execution, plugin results
-- Warning: Non-critical issues
-- Error: Failures, blocking conditions
+- **Trace**: Not used (all logs go to stderr)
+- **Debug**: Plugin discovery, compilation details
+- **Information**: Hook execution, plugin results, normal operations
+- **Warning**: Non-critical issues, plugin blocking decisions
+- **Error**: Failures, exceptions, blocking conditions
+
+### Performance Metrics
+
+Per-plugin logs automatically track execution duration:
+- Start timestamp captured before `ExecuteAsync` call
+- End timestamp captured after completion
+- Duration calculated: `(endTime - startTime).TotalMilliseconds`
+- Logged with 2 decimal precision: `duration=1.05ms`
 
 ## Marketplace Configuration
 
