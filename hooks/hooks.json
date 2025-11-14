@@ -1,0 +1,112 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "dotnet run ${CLAUDE_PLUGIN_ROOT}/hooks/Program.cs -- pre-tool-use",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "dotnet run ${CLAUDE_PLUGIN_ROOT}/hooks/Program.cs -- post-tool-use",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "dotnet run ${CLAUDE_PLUGIN_ROOT}/hooks/Program.cs -- user-prompt-submit",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "dotnet run ${CLAUDE_PLUGIN_ROOT}/hooks/Program.cs -- notification",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "dotnet run ${CLAUDE_PLUGIN_ROOT}/hooks/Program.cs -- stop",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "dotnet run ${CLAUDE_PLUGIN_ROOT}/hooks/Program.cs -- subagent-stop",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "dotnet run ${CLAUDE_PLUGIN_ROOT}/hooks/Program.cs -- session-start",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "dotnet run ${CLAUDE_PLUGIN_ROOT}/hooks/Program.cs -- session-end",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "dotnet run ${CLAUDE_PLUGIN_ROOT}/hooks/Program.cs -- pre-compact",
+            "timeout": 30000
+          }
+        ]
+      }
+    ]
+  }
+}

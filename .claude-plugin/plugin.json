@@ -1,0 +1,21 @@
+{
+  "name": "dot-hooks",
+  "version": "1.0.0",
+  "description": ".NET CLI tool for Claude Code hooks on Windows and WSL",
+  "author": {
+    "name": "Bobby Johnson",
+    "email": "bobby@notmyself.io"
+  },
+  "repository": "https://github.com/NotMyself/dot-hooks",
+  "homepage": "https://github.com/NotMyself/dot-hooks",
+  "license": "MIT",
+  "keywords": [
+    "hooks",
+    "dotnet",
+    "windows",
+    "wsl",
+    "automation",
+    "plugin-framework"
+  ],
+  "hooks": "./hooks/hooks.json"
+}
