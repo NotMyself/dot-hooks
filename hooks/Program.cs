@@ -5,6 +5,7 @@
 #:package Microsoft.Extensions.DependencyInjection@10.0.0
 
 using System.CommandLine;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
@@ -44,10 +45,12 @@ if (string.IsNullOrEmpty(pluginRoot))
 var globalPluginPath = Path.Combine(pluginRoot, "hooks", "plugins");
 
 // JSON serializer options with reflection enabled
+#pragma warning disable IL2026, IL3050 // Reflection-based JSON serialization required for hook I/O
 var jsonOptions = new JsonSerializerOptions
 {
     TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver()
 };
+#pragma warning restore IL2026, IL3050
 
 var rootCommand = new RootCommand("dot-hooks - Claude Code Hooks Plugin");
 
@@ -73,6 +76,8 @@ foreach (var eventName in hookEvents)
 
 return await rootCommand.InvokeAsync(args);
 
+[UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode", Justification = "JSON serialization needed for hook input/output")]
+[UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode", Justification = "JSON serialization not compatible with AOT")]
 async Task<int> HandleHookEventAsync(string eventName)
 {
     try
@@ -313,6 +318,11 @@ public class PluginLoader
         return plugins;
     }
 
+    [UnconditionalSuppressMessage("SingleFile", "IL3000:Avoid accessing Assembly file path", Justification = "File-based app using dotnet run, not single-file deployment")]
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode", Justification = "Dynamic plugin compilation requires reflection")]
+    [UnconditionalSuppressMessage("Trimming", "IL2072:UnrecognizedReflectionPattern", Justification = "Dynamic plugin instantiation requires reflection")]
+    [UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern", Justification = "Dynamic plugin compilation requires reflection")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode", Justification = "Dynamic plugin compilation not compatible with AOT")]
     private async Task<IHookPlugin?> CompileAndLoadPluginAsync(string sourceFile)
     {
         var sourceCode = await File.ReadAllTextAsync(sourceFile);
