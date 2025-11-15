@@ -90,37 +90,38 @@ mkdir -p .claude/hooks/dot-hooks
 
 ### 2. Create Your Plugin
 
-Create a `.cs` file in `.claude/hooks/dot-hooks/`. Example `UserHookLogger.cs`:
+Create a `.cs` file in `.claude/hooks/dot-hooks/`. Example `UserToolLogger.cs`:
 
 ```csharp
 namespace MyProject.Hooks;
 
 /// <summary>
-/// User plugin that logs hook events with project context.
-/// Plugins can optionally accept an ILogger in their constructor for structured logging.
+/// User plugin that logs tool events with project context.
+/// Plugins implement IHookEventHandler for each event type they handle.
 /// </summary>
-public class UserHookLogger(ILogger logger) : IHookPlugin
+public class UserToolLogger(ILogger logger) :
+    IHookEventHandler<ToolEventInput, ToolEventOutput>
 {
-    public string Name => "UserHookLogger";
+    public string Name => "UserToolLogger";
 
-    public Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken = default)
+    public Task<ToolEventOutput> HandleAsync(ToolEventInput input, CancellationToken cancellationToken = default)
     {
-        logger.LogInformation("Executing from user directory");
-        logger.LogInformation("Event: {EventType}", input.EventType);
+        logger.LogInformation("Tool event from user directory");
+        logger.LogInformation("Tool: {ToolName}", input.ToolName);
         logger.LogInformation("Project: {Cwd}", input.Cwd);
 
         // Add custom logic here
-        if (input.EventType == "pre-tool-use" && input.ToolName == "Write")
+        if (input.ToolName == "Write")
         {
             logger.LogInformation("About to write a file!");
         }
 
-        return Task.FromResult(HookOutput.Success());
+        return Task.FromResult(HookOutputBase.Success<ToolEventOutput>());
     }
 }
 ```
 
-**Note**: Plugins can optionally accept an `ILogger` parameter in their constructor. If your plugin doesn't need logging, you can use a parameterless constructor instead.
+**Note**: Plugins can request any registered service via constructor injection (ILogger, ILoggerFactory, etc.). Parameterless constructors also work.
 
 ### 3. Plugin Interface
 
@@ -464,4 +465,6 @@ Bobby Johnson (bobby@notmyself.io)
 
 ## Version
 
-1.0.0
+0.2.0 (Prototype/Proof of Concept)
+
+**Breaking Changes**: v0.2.0 introduces strongly-typed event handlers. Plugins from v0.1.0 are not compatible. See SPEC.md Migration Guide for upgrade instructions.
