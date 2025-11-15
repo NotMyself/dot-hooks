@@ -559,6 +559,379 @@ Users install from GitHub marketplace:
 /plugin marketplace add NotMyself/claude-dotnet-marketplace
 ```
 
+## Release and Distribution
+
+### Overview
+
+dot-hooks is distributed as a Claude Code plugin via GitHub. Unlike traditional .NET projects that distribute compiled binaries, Claude Code plugins distribute **source code** that users execute directly. This affects the release process and version management.
+
+### Key Principles
+
+1. **Source Distribution**: Raw `.cs` files are the deliverable (no DLLs or compiled artifacts)
+2. **GitHub-Based**: Users install directly from GitHub repository
+3. **Marketplace System**: Updates propagate via `/plugin marketplace update`
+4. **Version Synchronization**: Multiple files must stay in sync for each release
+5. **Git Tags Drive Releases**: Pushing tags triggers automated release workflows
+
+### Version Synchronization
+
+**Critical**: Keep version numbers synchronized across all metadata files:
+
+```bash
+.claude-plugin/plugin.json         # Line 3: "version": "0.2.0"
+.claude-plugin/marketplace.json    # Lines 3 and 13: "version": "0.2.0" (2 places!)
+README.md                          # Line 468: Version section
+```
+
+**Automated Verification**: The release workflow includes a version consistency check that fails if versions don't match the git tag.
+
+### GitHub Actions Workflows
+
+#### CI Workflow (.github/workflows/ci.yml)
+
+Runs on every push and pull request to validate code quality:
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore tests/DotHooks.Tests.csproj
+
+      - name: Build
+        run: dotnet build tests/DotHooks.Tests.csproj --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test tests/DotHooks.Tests.csproj --configuration Release --no-build --verbosity normal
+
+      - name: Validate plugin manifest
+        run: |
+          # Check plugin.json is valid JSON
+          jq empty .claude-plugin/plugin.json || exit 1
+          jq empty .claude-plugin/marketplace.json || exit 1
+
+          # Check versions match
+          PLUGIN_VERSION=$(jq -r '.version' .claude-plugin/plugin.json)
+          MARKETPLACE_VERSION=$(jq -r '.version' .claude-plugin/marketplace.json)
+
+          if [ "$PLUGIN_VERSION" != "$MARKETPLACE_VERSION" ]; then
+            echo "Version mismatch between plugin.json and marketplace.json"
+            exit 1
+          fi
+```
+
+#### Release Workflow (.github/workflows/release.yml)
+
+Triggered by pushing version tags (e.g., `v0.2.0`):
+
+```yaml
+name: Release Claude Code Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run tests
+        run: dotnet test tests/DotHooks.Tests.csproj --configuration Release
+
+      - name: Verify version consistency
+        run: |
+          PLUGIN_VERSION=$(jq -r '.version' .claude-plugin/plugin.json)
+          MARKETPLACE_VERSION=$(jq -r '.version' .claude-plugin/marketplace.json)
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+
+          if [ "$PLUGIN_VERSION" != "$TAG_VERSION" ] || [ "$MARKETPLACE_VERSION" != "$TAG_VERSION" ]; then
+            echo "Version mismatch!"
+            echo "plugin.json: $PLUGIN_VERSION"
+            echo "marketplace.json: $MARKETPLACE_VERSION"
+            echo "Git tag: $TAG_VERSION"
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            ```bash
+            /plugin marketplace add NotMyself/claude-dotnet-marketplace
+            ```
+
+            ## Update Existing Installation
+
+            ```bash
+            /plugin marketplace update notmyself-marketplace
+            ```
+          files: |
+            LICENSE
+            README.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Release Process Checklist
+
+Follow these steps for each release:
+
+#### 1. Update Version Numbers
+
+Edit all version references to match the new version (e.g., `0.3.0`):
+
+```bash
+# Files to update:
+.claude-plugin/plugin.json (line 3)
+.claude-plugin/marketplace.json (lines 3 and 13)
+README.md (line 468 - Version section)
+```
+
+#### 2. Update CHANGELOG.md
+
+Document changes following [Keep a Changelog](https://keepachangelog.com/) format:
+
+```markdown
+## [0.3.0] - 2025-XX-XX
+
+### Added
+- New feature descriptions
+
+### Changed
+- Modified behavior descriptions
+
+### Fixed
+- Bug fix descriptions
+
+### Breaking Changes
+- Breaking change descriptions and migration instructions
+```
+
+#### 3. Run Tests Locally
+
+```bash
+dotnet test tests/DotHooks.Tests.csproj --configuration Release
+```
+
+Ensure all tests pass before proceeding.
+
+#### 4. Commit Version Changes
+
+```bash
+git add .claude-plugin/plugin.json .claude-plugin/marketplace.json README.md CHANGELOG.md
+git commit -m "chore: bump version to 0.3.0"
+git push origin main
+```
+
+#### 5. Create and Push Tag
+
+```bash
+# Create annotated tag
+git tag -a v0.3.0 -m "Release v0.3.0"
+
+# Push tag to trigger release workflow
+git push origin v0.3.0
+```
+
+#### 6. Verify Release
+
+1. **GitHub Actions**: Check workflow runs successfully
+2. **GitHub Release**: Verify release created with correct version
+3. **Release Notes**: Review auto-generated notes
+4. **Version Check**: Confirm version consistency passed
+
+### CHANGELOG.md Format
+
+Maintain a changelog following semantic versioning principles:
+
+```markdown
+# Changelog
+
+All notable changes to dot-hooks will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- Features being worked on
+
+## [0.2.0] - 2025-11-15
+
+### Added
+- Strongly-typed event handler system
+- Event-specific input/output contracts
+- Per-plugin logging infrastructure
+
+### Changed
+- Migrated from monolithic `IHookPlugin` to `IHookEventHandler<TInput, TOutput>`
+
+### Breaking Changes
+- Plugins from v0.1.0 are not compatible with v0.2.0
+- See Migration Guide for upgrade instructions
+
+## [0.1.0] - 2024-XX-XX
+
+### Added
+- Initial release
+- Basic plugin framework
+- HookLogger global plugin
+- Runtime compilation with Roslyn
+
+[Unreleased]: https://github.com/NotMyself/dot-hooks/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/NotMyself/dot-hooks/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/NotMyself/dot-hooks/releases/tag/v0.1.0
+```
+
+### How Users Update
+
+When a new release is published, users update their installation:
+
+```bash
+# In Claude Code CLI
+/plugin marketplace update notmyself-marketplace
+```
+
+**Important**: This pulls the latest code from the **main branch**, not necessarily tagged releases. Consider:
+
+1. **Option A (Recommended)**: Only merge to `main` when ready to release
+2. **Option B**: Use a `release` branch that users install from
+
+### Distribution Notes
+
+#### Source vs. Binaries
+
+**No Build Artifacts**: Unlike NuGet packages or traditional .NET distributions, Claude Code plugins:
+- Do **not** publish compiled DLLs
+- Distribute raw `.cs` source files
+- Rely on user's .NET runtime for JIT compilation
+- Execute via `dotnet run` on user's machine
+
+**Implications**:
+- Users need .NET 10 SDK installed
+- Source code is visible to users
+- Runtime compilation happens on each execution (until .NET caching)
+- Plugin updates are immediate (no reinstall required)
+
+#### File-Based App Execution
+
+The `hooks/` directory structure is executed as-is:
+```
+hooks/
+├── Program.cs          # Entry point
+├── PluginLoader.cs     # Included at runtime
+├── SharedTypes.cs      # Included at runtime
+├── hooks.json          # Configuration
+└── plugins/            # Global plugins
+    └── HookLogger.cs
+```
+
+**Note**: Currently uses .NET 10 file-based app model with `#:package` directives. Multi-file support is limited to a single execution context via implicit compilation.
+
+#### Breaking Changes
+
+**Document Clearly**: Since users can't easily roll back versions:
+- Mark breaking changes explicitly in CHANGELOG.md
+- Provide migration guides (see Migration Guide section)
+- Consider semantic versioning for compatibility signals
+  - MAJOR version: Breaking changes (0.x.x → 1.0.0)
+  - MINOR version: New features, backward compatible (0.2.x → 0.3.0)
+  - PATCH version: Bug fixes (0.2.0 → 0.2.1)
+
+#### README Installation Instructions
+
+Always include exact marketplace path in README:
+
+```bash
+/plugin marketplace add NotMyself/claude-dotnet-marketplace
+```
+
+**Format**: `owner/repo-name` (GitHub repository path)
+
+### GitHub Repository Settings
+
+Ensure proper configuration for automated releases:
+
+1. **Actions Permissions**:
+   - Settings → Actions → General
+   - Workflow permissions: "Read and write permissions"
+   - Allow GitHub Actions to create releases
+
+2. **Branch Protection** (Optional but Recommended):
+   - Protect `main` branch
+   - Require status checks (CI workflow)
+   - Require pull request reviews
+
+3. **Secrets** (Pre-configured):
+   - `GITHUB_TOKEN`: Automatically provided by GitHub Actions
+
+### Semantic Versioning Strategy
+
+Follow [Semantic Versioning 2.0.0](https://semver.org/):
+
+- **0.x.x**: Prototype/proof of concept phase (current)
+- **1.0.0**: Production-ready, stable API
+- **1.x.x**: Backward-compatible features
+- **2.0.0**: Next breaking change
+
+**For dot-hooks**:
+- v0.1.0 → v0.2.0: Breaking change (new type system)
+- v0.2.0 → v0.3.0: Planned features (backward compatible)
+- v0.x.x → v1.0.0: Stable API commitment
+
+### Troubleshooting Releases
+
+**Problem**: Version check fails during release
+- **Solution**: Verify all version strings match exactly (no extra spaces)
+- **Check**: Run `jq -r '.version' .claude-plugin/plugin.json` locally
+
+**Problem**: Tests fail in CI but pass locally
+- **Solution**: Ensure .NET 10 SDK is installed locally
+- **Check**: Run `dotnet --version` (should be 10.0.x)
+
+**Problem**: Release workflow doesn't trigger
+- **Solution**: Verify tag format is `v*` (e.g., `v0.2.0`, not `0.2.0`)
+- **Check**: Use annotated tags: `git tag -a v0.2.0 -m "message"`
+
+**Problem**: Users report old version after update
+- **Solution**: Ensure latest code is on `main` branch
+- **Check**: GitHub repository default branch is `main`
+
 ## Example Plugins
 
 ### Global Plugin: HookLogger.cs
