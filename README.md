@@ -17,7 +17,7 @@ A .NET 10 CLI-based plugin framework for Claude Code hooks that enables extensib
 Install from GitHub marketplace:
 
 ```bash
-/plugin marketplace add NotMyself/dot-hooks
+/plugin marketplace add NotMyself/claude-dotnet-marketplace
 ```
 
 ## Requirements
