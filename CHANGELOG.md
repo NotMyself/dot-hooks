@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2025-11-15
+
+### Added
+- Automated marketplace version synchronization workflow
+- Marketplace polling system for automatic plugin updates
+
+### Fixed
+- Assembly loading issue causing test failures when running multiple tests
+- Unique assembly names now generated for each dynamic plugin compilation
+
 ## [0.2.0] - 2025-11-15
 
 ### Added
@@ -40,5 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Handler discovery correctly identifies generic interface implementations
 - Type constraint validation prevents mismatched Input/Output types at compile time
 
-[Unreleased]: https://github.com/NotMyself/dot-hooks/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/NotMyself/dot-hooks/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/NotMyself/dot-hooks/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/NotMyself/dot-hooks/releases/tag/v0.2.0

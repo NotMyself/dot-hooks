@@ -298,7 +298,7 @@ using System.Collections.Generic;
         catch { }
 
         var compilation = CSharpCompilation.Create(
-            assemblyName: Path.GetFileNameWithoutExtension(sourceFile),
+            assemblyName: $"{Path.GetFileNameWithoutExtension(sourceFile)}_{Guid.NewGuid():N}",
             syntaxTrees: new[] { syntaxTree },
             references: references,
             options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
