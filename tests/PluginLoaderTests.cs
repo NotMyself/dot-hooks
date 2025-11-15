@@ -1,4 +1,3 @@
-using DotHooks;
 using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using NSubstitute;
@@ -9,7 +8,7 @@ namespace DotHooks.Tests;
 public class PluginLoaderTests
 {
     private ILogger<PluginLoader> _logger = null!;
-    private ILoggerFactory _loggerFactory = null!;
+    private IServiceProvider _serviceProvider = null!;
     private PluginLoader _pluginLoader = null!;
     private string _testDirectory = null!;
 
@@ -17,9 +16,13 @@ public class PluginLoaderTests
     public void Setup()
     {
         _logger = Substitute.For<ILogger<PluginLoader>>();
-        _loggerFactory = Substitute.For<ILoggerFactory>();
-        _loggerFactory.CreateLogger(Arg.Any<string>()).Returns(Substitute.For<ILogger>());
-        _pluginLoader = new PluginLoader(_logger, _loggerFactory);
+
+        // Create a service provider that can return loggers
+        var sp = Substitute.For<IServiceProvider>();
+        sp.GetService(typeof(ILogger)).Returns(Substitute.For<ILogger>());
+        _serviceProvider = sp;
+
+        _pluginLoader = new PluginLoader(_logger, _serviceProvider);
         _testDirectory = Path.Combine(Path.GetTempPath(), $"dot-hooks-test-{Guid.NewGuid()}");
         Directory.CreateDirectory(_testDirectory);
     }
@@ -34,102 +37,95 @@ public class PluginLoaderTests
     }
 
     [TestMethod]
-    public async Task LoadPluginsAsync_WithNoPlugins_ReturnsEmptyList()
+    public async Task LoadHandlerTypesAsync_WithNoPlugins_ReturnsEmptyList()
     {
         // Arrange
         var emptyDirectory = Path.Combine(_testDirectory, "empty");
         Directory.CreateDirectory(emptyDirectory);
 
         // Act
-        var plugins = await _pluginLoader.LoadPluginsAsync(emptyDirectory);
+        var handlerTypes = await _pluginLoader.LoadHandlerTypesAsync(emptyDirectory);
 
         // Assert
-        Assert.IsNotNull(plugins);
-        Assert.AreEqual(0, plugins.Count);
+        Assert.IsNotNull(handlerTypes);
+        Assert.AreEqual(0, handlerTypes.Count);
     }
 
     [TestMethod]
-    public async Task LoadPluginsAsync_WithNonExistentDirectory_ReturnsEmptyList()
+    public async Task LoadHandlerTypesAsync_WithNonExistentDirectory_ReturnsEmptyList()
     {
         // Arrange
         var nonExistentPath = Path.Combine(_testDirectory, "non-existent");
 
         // Act
-        var plugins = await _pluginLoader.LoadPluginsAsync(nonExistentPath);
+        var handlerTypes = await _pluginLoader.LoadHandlerTypesAsync(nonExistentPath);
 
         // Assert
-        Assert.IsNotNull(plugins);
-        Assert.AreEqual(0, plugins.Count);
+        Assert.IsNotNull(handlerTypes);
+        Assert.AreEqual(0, handlerTypes.Count);
     }
 
     [TestMethod]
-    public async Task LoadPluginsAsync_WithValidPlugin_LoadsSuccessfully()
+    public async Task LoadHandlerTypesAsync_WithValidHandler_LoadsSuccessfully()
     {
         // Arrange
         var pluginDirectory = Path.Combine(_testDirectory, "plugins");
         Directory.CreateDirectory(pluginDirectory);
 
-        var pluginSource = """
-        using DotHooks;
+        var handlerSource = """
         using System.Threading.Tasks;
 
-        namespace TestPlugin;
-
-        public class TestHookPlugin : IHookPlugin
+        public class TestHandler : IHookEventHandler<ToolEventInput, ToolEventOutput>
         {
-            public string Name => "TestPlugin";
+            public string Name => "TestHandler";
 
-            public Task<HookOutput> ExecuteAsync(HookInput input, System.Threading.CancellationToken cancellationToken = default)
+            public Task<ToolEventOutput> HandleAsync(ToolEventInput input, System.Threading.CancellationToken cancellationToken = default)
             {
-                return Task.FromResult(HookOutput.Success());
+                return Task.FromResult(HookOutputBase.Success<ToolEventOutput>());
             }
         }
         """;
 
-        var pluginPath = Path.Combine(pluginDirectory, "TestPlugin.cs");
-        await File.WriteAllTextAsync(pluginPath, pluginSource);
+        var handlerPath = Path.Combine(pluginDirectory, "TestHandler.cs");
+        await File.WriteAllTextAsync(handlerPath, handlerSource);
 
         // Act
-        var plugins = await _pluginLoader.LoadPluginsAsync(pluginDirectory);
+        var handlerTypes = await _pluginLoader.LoadHandlerTypesAsync(pluginDirectory);
 
         // Assert
-        Assert.IsNotNull(plugins);
-        Assert.AreEqual(1, plugins.Count);
-        Assert.AreEqual("TestPlugin", plugins[0].Name);
+        Assert.IsNotNull(handlerTypes);
+        Assert.AreEqual(1, handlerTypes.Count);
+        Assert.AreEqual("TestHandler", handlerTypes[0].Name);
     }
 
     [TestMethod]
-    public async Task LoadPluginsAsync_WithInvalidPlugin_SkipsPlugin()
+    public async Task LoadHandlerTypesAsync_WithInvalidHandler_SkipsHandler()
     {
         // Arrange
         var pluginDirectory = Path.Combine(_testDirectory, "plugins");
         Directory.CreateDirectory(pluginDirectory);
 
         var invalidSource = """
-        using DotHooks;
-
-        // This is not a valid plugin - missing implementation
-        namespace TestPlugin;
-
-        public class NotAPlugin
+        // This is not a valid handler - missing interface implementation
+        public class NotAHandler
         {
             public string Name => "Invalid";
         }
         """;
 
-        var pluginPath = Path.Combine(pluginDirectory, "Invalid.cs");
-        await File.WriteAllTextAsync(pluginPath, invalidSource);
+        var handlerPath = Path.Combine(pluginDirectory, "Invalid.cs");
+        await File.WriteAllTextAsync(handlerPath, invalidSource);
 
         // Act
-        var plugins = await _pluginLoader.LoadPluginsAsync(pluginDirectory);
+        var handlerTypes = await _pluginLoader.LoadHandlerTypesAsync(pluginDirectory);
 
         // Assert
-        Assert.IsNotNull(plugins);
-        Assert.AreEqual(0, plugins.Count);
+        Assert.IsNotNull(handlerTypes);
+        Assert.AreEqual(0, handlerTypes.Count);
     }
 
     [TestMethod]
-    public async Task LoadPluginsAsync_LoadsBothGlobalAndUserPlugins()
+    public async Task LoadHandlerTypesAsync_LoadsBothGlobalAndUserHandlers()
     {
         // Arrange
         var globalDirectory = Path.Combine(_testDirectory, "global");
@@ -137,94 +133,176 @@ public class PluginLoaderTests
         Directory.CreateDirectory(globalDirectory);
         Directory.CreateDirectory(userDirectory);
 
-        var globalPluginSource = """
-        using DotHooks;
+        var globalHandlerSource = """
         using System.Threading.Tasks;
 
-        namespace GlobalPlugin;
-
-        public class GlobalHookPlugin : IHookPlugin
+        public class GlobalHandler : IHookEventHandler<SessionEventInput, SessionEventOutput>
         {
-            public string Name => "GlobalPlugin";
+            public string Name => "GlobalHandler";
 
-            public Task<HookOutput> ExecuteAsync(HookInput input, System.Threading.CancellationToken cancellationToken = default)
+            public Task<SessionEventOutput> HandleAsync(SessionEventInput input, System.Threading.CancellationToken cancellationToken = default)
             {
-                return Task.FromResult(HookOutput.Success());
+                return Task.FromResult(HookOutputBase.Success<SessionEventOutput>());
             }
         }
         """;
 
-        var userPluginSource = """
-        using DotHooks;
+        var userHandlerSource = """
         using System.Threading.Tasks;
 
-        namespace UserPlugin;
-
-        public class UserHookPlugin : IHookPlugin
+        public class UserHandler : IHookEventHandler<ToolEventInput, ToolEventOutput>
         {
-            public string Name => "UserPlugin";
+            public string Name => "UserHandler";
 
-            public Task<HookOutput> ExecuteAsync(HookInput input, System.Threading.CancellationToken cancellationToken = default)
+            public Task<ToolEventOutput> HandleAsync(ToolEventInput input, System.Threading.CancellationToken cancellationToken = default)
             {
-                return Task.FromResult(HookOutput.Success());
+                return Task.FromResult(HookOutputBase.Success<ToolEventOutput>());
             }
         }
         """;
 
-        await File.WriteAllTextAsync(Path.Combine(globalDirectory, "Global.cs"), globalPluginSource);
-        await File.WriteAllTextAsync(Path.Combine(userDirectory, "User.cs"), userPluginSource);
+        await File.WriteAllTextAsync(Path.Combine(globalDirectory, "Global.cs"), globalHandlerSource);
+        await File.WriteAllTextAsync(Path.Combine(userDirectory, "User.cs"), userHandlerSource);
 
         // Act
-        var plugins = await _pluginLoader.LoadPluginsAsync(globalDirectory, userDirectory);
+        var handlerTypes = await _pluginLoader.LoadHandlerTypesAsync(globalDirectory, userDirectory);
 
         // Assert
-        Assert.IsNotNull(plugins);
-        Assert.AreEqual(2, plugins.Count);
-        Assert.IsTrue(plugins.Any(p => p.Name == "GlobalPlugin"));
-        Assert.IsTrue(plugins.Any(p => p.Name == "UserPlugin"));
+        Assert.IsNotNull(handlerTypes);
+        Assert.AreEqual(2, handlerTypes.Count);
+        Assert.IsTrue(handlerTypes.Any(t => t.Name == "GlobalHandler"));
+        Assert.IsTrue(handlerTypes.Any(t => t.Name == "UserHandler"));
     }
 
     [TestMethod]
-    public async Task LoadPluginsAsync_LoadsPluginsInAlphabeticalOrder()
+    public async Task GetHandlersForEvent_FiltersHandlersByEventType()
     {
         // Arrange
         var pluginDirectory = Path.Combine(_testDirectory, "plugins");
         Directory.CreateDirectory(pluginDirectory);
 
-        var pluginASource = """
-        using DotHooks;
+        var multiHandlerSource = """
         using System.Threading.Tasks;
 
-        public class PluginA : IHookPlugin
+        public class MultiHandler :
+            IHookEventHandler<ToolEventInput, ToolEventOutput>,
+            IHookEventHandler<SessionEventInput, SessionEventOutput>
         {
-            public string Name => "A";
-            public Task<HookOutput> ExecuteAsync(HookInput input, System.Threading.CancellationToken cancellationToken = default)
-                => Task.FromResult(HookOutput.Success());
+            public string Name => "MultiHandler";
+
+            Task<ToolEventOutput> IHookEventHandler<ToolEventInput, ToolEventOutput>.HandleAsync(
+                ToolEventInput input, System.Threading.CancellationToken ct)
+            {
+                return Task.FromResult(HookOutputBase.Success<ToolEventOutput>());
+            }
+
+            Task<SessionEventOutput> IHookEventHandler<SessionEventInput, SessionEventOutput>.HandleAsync(
+                SessionEventInput input, System.Threading.CancellationToken ct)
+            {
+                return Task.FromResult(HookOutputBase.Success<SessionEventOutput>());
+            }
         }
         """;
 
-        var pluginBSource = """
-        using DotHooks;
+        await File.WriteAllTextAsync(Path.Combine(pluginDirectory, "Multi.cs"), multiHandlerSource);
+
+        var handlerTypes = await _pluginLoader.LoadHandlerTypesAsync(pluginDirectory);
+
+        // Act - Get handlers for tool events only
+        var toolHandlers = _pluginLoader.GetHandlersForEvent(handlerTypes, typeof(ToolEventInput), typeof(ToolEventOutput));
+        var sessionHandlers = _pluginLoader.GetHandlersForEvent(handlerTypes, typeof(SessionEventInput), typeof(SessionEventOutput));
+
+        // Assert
+        Assert.AreEqual(1, toolHandlers.Count);
+        Assert.AreEqual(1, sessionHandlers.Count);
+        Assert.AreEqual("MultiHandler", _pluginLoader.GetHandlerName(toolHandlers[0]));
+        Assert.AreEqual("MultiHandler", _pluginLoader.GetHandlerName(sessionHandlers[0]));
+    }
+
+    [TestMethod]
+    public async Task GetHandlersForEvent_OrdersHandlersAlphabetically()
+    {
+        // Arrange
+        var pluginDirectory = Path.Combine(_testDirectory, "plugins");
+        Directory.CreateDirectory(pluginDirectory);
+
+        var handlerASource = """
         using System.Threading.Tasks;
 
-        public class PluginB : IHookPlugin
+        public class HandlerA : IHookEventHandler<ToolEventInput, ToolEventOutput>
+        {
+            public string Name => "A";
+            public Task<ToolEventOutput> HandleAsync(ToolEventInput input, System.Threading.CancellationToken ct)
+                => Task.FromResult(HookOutputBase.Success<ToolEventOutput>());
+        }
+        """;
+
+        var handlerBSource = """
+        using System.Threading.Tasks;
+
+        public class HandlerB : IHookEventHandler<ToolEventInput, ToolEventOutput>
         {
             public string Name => "B";
-            public Task<HookOutput> ExecuteAsync(HookInput input, System.Threading.CancellationToken cancellationToken = default)
-                => Task.FromResult(HookOutput.Success());
+            public Task<ToolEventOutput> HandleAsync(ToolEventInput input, System.Threading.CancellationToken ct)
+                => Task.FromResult(HookOutputBase.Success<ToolEventOutput>());
         }
         """;
 
         // Write in reverse order
-        await File.WriteAllTextAsync(Path.Combine(pluginDirectory, "B.cs"), pluginBSource);
-        await File.WriteAllTextAsync(Path.Combine(pluginDirectory, "A.cs"), pluginASource);
+        await File.WriteAllTextAsync(Path.Combine(pluginDirectory, "B.cs"), handlerBSource);
+        await File.WriteAllTextAsync(Path.Combine(pluginDirectory, "A.cs"), handlerASource);
+
+        var handlerTypes = await _pluginLoader.LoadHandlerTypesAsync(pluginDirectory);
 
         // Act
-        var plugins = await _pluginLoader.LoadPluginsAsync(pluginDirectory);
+        var handlers = _pluginLoader.GetHandlersForEvent(handlerTypes, typeof(ToolEventInput), typeof(ToolEventOutput));
 
         // Assert
-        Assert.AreEqual(2, plugins.Count);
-        Assert.AreEqual("A", plugins[0].Name); // Should be first alphabetically
-        Assert.AreEqual("B", plugins[1].Name);
+        Assert.AreEqual(2, handlers.Count);
+        Assert.AreEqual("A", _pluginLoader.GetHandlerName(handlers[0])); // Should be first alphabetically
+        Assert.AreEqual("B", _pluginLoader.GetHandlerName(handlers[1]));
+    }
+
+    [TestMethod]
+    public async Task GetHandlersForEvent_CreatesHandlerInstancesWithDI()
+    {
+        // Arrange
+        var pluginDirectory = Path.Combine(_testDirectory, "plugins");
+        Directory.CreateDirectory(pluginDirectory);
+
+        var handlerSource = """
+        using System.Threading.Tasks;
+        using Microsoft.Extensions.Logging;
+
+        public class DIHandler : IHookEventHandler<ToolEventInput, ToolEventOutput>
+        {
+            private readonly ILogger _logger;
+
+            public DIHandler(ILogger logger)
+            {
+                _logger = logger;
+            }
+
+            public string Name => "DIHandler";
+
+            public Task<ToolEventOutput> HandleAsync(ToolEventInput input, System.Threading.CancellationToken ct)
+            {
+                _logger.LogInformation("Test");
+                return Task.FromResult(HookOutputBase.Success<ToolEventOutput>());
+            }
+        }
+        """;
+
+        await File.WriteAllTextAsync(Path.Combine(pluginDirectory, "DI.cs"), handlerSource);
+
+        var handlerTypes = await _pluginLoader.LoadHandlerTypesAsync(pluginDirectory);
+
+        // Act
+        var handlers = _pluginLoader.GetHandlersForEvent(handlerTypes, typeof(ToolEventInput), typeof(ToolEventOutput));
+
+        // Assert
+        Assert.AreEqual(1, handlers.Count);
+        Assert.IsNotNull(handlers[0]);
+        Assert.AreEqual("DIHandler", _pluginLoader.GetHandlerName(handlers[0]));
     }
 }

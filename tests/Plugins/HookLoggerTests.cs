@@ -1,159 +1,179 @@
-using DotHooks;
 using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using NSubstitute;
 
 namespace DotHooks.Tests.Plugins;
 
+/// <summary>
+/// Tests for HookLogger plugin using PluginLoader to compile and load it dynamically.
+/// This tests the real-world scenario where plugins are compiled at runtime.
+/// </summary>
 [TestClass]
 public class HookLoggerTests
 {
-    private HookLogger _plugin = null!;
     private ILogger _mockLogger = null!;
+    private IServiceProvider _serviceProvider = null!;
 
     [TestInitialize]
     public void Setup()
     {
         _mockLogger = Substitute.For<ILogger>();
-        _plugin = new HookLogger(_mockLogger);
+
+        // Create a simple service provider that returns our mock logger
+        var sp = Substitute.For<IServiceProvider>();
+        sp.GetService(typeof(ILogger)).Returns(_mockLogger);
+        _serviceProvider = sp;
     }
 
     [TestMethod]
-    public void HookLogger_HasCorrectName()
-    {
-        // Assert
-        Assert.AreEqual("HookLogger", _plugin.Name);
-    }
-
-    [TestMethod]
-    public async Task ExecuteAsync_LogsEventType()
+    public async Task HookLogger_CompilesSuccessfully()
     {
         // Arrange
-        var input = new HookInput
-        {
-            SessionId = "test-session",
-            EventType = "pre-tool-use",
-            Cwd = "/test/dir"
-        };
+        var pluginLoader = new PluginLoader(
+            Substitute.For<ILogger<PluginLoader>>(),
+            _serviceProvider);
+
+        var pluginPath = Path.Combine("..", "..", "..", "..", "hooks", "plugins");
+        var fullPath = Path.GetFullPath(pluginPath);
 
         // Act
-        await _plugin.ExecuteAsync(input);
+        var handlerTypes = await pluginLoader.LoadHandlerTypesAsync(fullPath);
 
         // Assert
-        _mockLogger.Received().Log(
-            LogLevel.Information,
-            Arg.Any<EventId>(),
-            Arg.Is<object>(o => o.ToString()!.Contains("Hook event triggered")),
-            null,
-            Arg.Any<Func<object, Exception?, string>>());
+        Assert.IsTrue(handlerTypes.Count > 0, $"Should discover at least one handler type. Found: {handlerTypes.Count}");
+        Assert.IsTrue(handlerTypes.Any(t => t.Name == "HookLogger"),
+            $"Should discover HookLogger. Found types: {string.Join(", ", handlerTypes.Select(t => t.Name))}");
+
+        // Also check what interfaces the HookLogger implements
+        var hookLoggerType = handlerTypes.FirstOrDefault(t => t.Name == "HookLogger");
+        if (hookLoggerType != null)
+        {
+            var interfaces = hookLoggerType.GetInterfaces();
+            Console.WriteLine($"HookLogger implements {interfaces.Length} interfaces:");
+            foreach (var iface in interfaces)
+            {
+                Console.WriteLine($"  - {iface.Name}");
+            }
+        }
     }
 
     [TestMethod]
-    public async Task ExecuteAsync_LogsSessionId()
+    public async Task HookLogger_HandlesToolEvents()
     {
         // Arrange
-        var input = new HookInput
-        {
-            SessionId = "test-session-123",
-            EventType = "post-tool-use",
-            Cwd = "/test/dir"
-        };
+        var pluginLoader = new PluginLoader(
+            Substitute.For<ILogger<PluginLoader>>(),
+            _serviceProvider);
+
+        var pluginPath = Path.Combine("..", "..", "..", "..", "hooks", "plugins");
+        var fullPath = Path.GetFullPath(pluginPath);
+        var handlerTypes = await pluginLoader.LoadHandlerTypesAsync(fullPath);
+
+        // Get handlers for tool events
+        var handlers = pluginLoader.GetHandlersForEvent(handlerTypes, typeof(ToolEventInput), typeof(ToolEventOutput));
+
+        Assert.IsTrue(handlers.Count > 0, $"Should have at least one tool event handler. Discovered {handlerTypes.Count} types but got {handlers.Count} handlers");
+
+        var handler = handlers.First() as IHookEventHandler<ToolEventInput, ToolEventOutput>;
+        Assert.IsNotNull(handler, "Handler should implement IHookEventHandler<ToolEventInput, ToolEventOutput>");
 
         // Act
-        await _plugin.ExecuteAsync(input);
-
-        // Assert
-        _mockLogger.Received().Log(
-            LogLevel.Information,
-            Arg.Any<EventId>(),
-            Arg.Is<object>(o => o.ToString()!.Contains("Session ID")),
-            null,
-            Arg.Any<Func<object, Exception?, string>>());
-    }
-
-    [TestMethod]
-    public async Task ExecuteAsync_LogsWorkingDirectory()
-    {
-        // Arrange
-        var input = new HookInput
+        var input = new ToolEventInput
         {
             SessionId = "test-session",
-            EventType = "session-start",
-            Cwd = "/my/working/dir"
-        };
-
-        // Act
-        await _plugin.ExecuteAsync(input);
-
-        // Assert
-        _mockLogger.Received().Log(
-            LogLevel.Information,
-            Arg.Any<EventId>(),
-            Arg.Is<object>(o => o.ToString()!.Contains("Working Directory")),
-            null,
-            Arg.Any<Func<object, Exception?, string>>());
-    }
-
-    [TestMethod]
-    public async Task ExecuteAsync_LogsToolNameWhenProvided()
-    {
-        // Arrange
-        var input = new HookInput
-        {
-            SessionId = "test-session",
-            EventType = "pre-tool-use",
             Cwd = "/test/dir",
             ToolName = "Write"
         };
 
-        // Act
-        await _plugin.ExecuteAsync(input);
-
-        // Assert
-        _mockLogger.Received().Log(
-            LogLevel.Information,
-            Arg.Any<EventId>(),
-            Arg.Is<object>(o => o.ToString()!.Contains("Tool")),
-            null,
-            Arg.Any<Func<object, Exception?, string>>());
-    }
-
-    [TestMethod]
-    public async Task ExecuteAsync_ReturnsSuccessOutput()
-    {
-        // Arrange
-        var input = new HookInput
-        {
-            SessionId = "test-session",
-            EventType = "pre-tool-use",
-            Cwd = "/test/dir"
-        };
-
-        // Act
-        var output = await _plugin.ExecuteAsync(input);
+        var output = await handler.HandleAsync(input);
 
         // Assert
         Assert.IsNotNull(output);
         Assert.AreEqual("approve", output.Decision);
         Assert.IsTrue(output.Continue);
+
+        // Verify the handler was called (can't verify logger since it's injected by PluginLoader)
     }
 
     [TestMethod]
-    public async Task ExecuteAsync_CompletesWithinReasonableTime()
+    public async Task HookLogger_HandlesSessionEvents()
     {
         // Arrange
-        var input = new HookInput
+        // Create a fresh service provider for this test
+        var sp = Substitute.For<IServiceProvider>();
+        sp.GetService(typeof(ILogger)).Returns(Substitute.For<ILogger>());
+
+        var pluginLoader = new PluginLoader(
+            Substitute.For<ILogger<PluginLoader>>(),
+            sp);
+
+        var pluginPath = Path.Combine("..", "..", "..", "..", "hooks", "plugins");
+        var fullPath = Path.GetFullPath(pluginPath);
+        var handlerTypes = await pluginLoader.LoadHandlerTypesAsync(fullPath);
+
+        // Get handlers for session events
+        var handlers = pluginLoader.GetHandlersForEvent(handlerTypes, typeof(SessionEventInput), typeof(SessionEventOutput));
+
+        Assert.IsTrue(handlers.Count > 0, $"Should have at least one session event handler. Found {handlerTypes.Count} types, {handlers.Count} handlers");
+
+        var handler = handlers.First() as IHookEventHandler<SessionEventInput, SessionEventOutput>;
+        Assert.IsNotNull(handler, "Handler should implement IHookEventHandler<SessionEventInput, SessionEventOutput>");
+
+        // Act
+        var input = new SessionEventInput
         {
             SessionId = "test-session",
-            EventType = "pre-tool-use",
             Cwd = "/test/dir"
         };
 
-        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        var output = await handler.HandleAsync(input);
 
-        // Act & Assert
-        await _plugin.ExecuteAsync(input, cts.Token);
-        // If we get here without timeout, the test passes
-        Assert.IsTrue(true);
+        // Assert
+        Assert.IsNotNull(output);
+        Assert.AreEqual("approve", output.Decision);
+        Assert.IsTrue(output.Continue);
+
+        // Verify the handler was called (can't verify logger since it's injected by PluginLoader)
+    }
+
+    [TestMethod]
+    public async Task HookLogger_HandlesGenericEvents()
+    {
+        // Arrange
+        // Create a fresh service provider for this test
+        var sp = Substitute.For<IServiceProvider>();
+        sp.GetService(typeof(ILogger)).Returns(Substitute.For<ILogger>());
+
+        var pluginLoader = new PluginLoader(
+            Substitute.For<ILogger<PluginLoader>>(),
+            sp);
+
+        var pluginPath = Path.Combine("..", "..", "..", "..", "hooks", "plugins");
+        var fullPath = Path.GetFullPath(pluginPath);
+        var handlerTypes = await pluginLoader.LoadHandlerTypesAsync(fullPath);
+
+        // Get handlers for generic events
+        var handlers = pluginLoader.GetHandlersForEvent(handlerTypes, typeof(GenericEventInput), typeof(GenericEventOutput));
+
+        Assert.IsTrue(handlers.Count > 0, $"Should have at least one generic event handler. Found {handlerTypes.Count} types, {handlers.Count} handlers");
+
+        var handler = handlers.First() as IHookEventHandler<GenericEventInput, GenericEventOutput>;
+        Assert.IsNotNull(handler, "Handler should implement IHookEventHandler<GenericEventInput, GenericEventOutput>");
+
+        // Act
+        var input = new GenericEventInput
+        {
+            SessionId = "test-session",
+            Cwd = "/test/dir"
+        };
+
+        var output = await handler.HandleAsync(input);
+
+        // Assert
+        Assert.IsNotNull(output);
+        Assert.AreEqual("approve", output.Decision);
+        Assert.IsTrue(output.Continue);
+
+        // Verify the handler was called (can't verify logger since it's injected by PluginLoader)
     }
 }

@@ -81,6 +81,8 @@ foreach (var eventName in hookEvents)
 return await rootCommand.InvokeAsync(args);
 
 [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode", Justification = "JSON serialization needed for hook input/output")]
+[UnconditionalSuppressMessage("Trimming", "IL2060:UnrecognizedReflectionPattern", Justification = "Dynamic handler invocation requires reflection")]
+[UnconditionalSuppressMessage("Trimming", "IL2070:UnrecognizedReflectionPattern", Justification = "Dynamic handler invocation requires reflection")]
 [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode", Justification = "JSON serialization not compatible with AOT")]
 async Task<int> HandleHookEventAsync(string eventName)
 {
@@ -88,138 +90,174 @@ async Task<int> HandleHookEventAsync(string eventName)
     {
         logger.LogInformation("Processing hook event: {EventName}", eventName);
 
+        // Get event type mapping
+        var (inputType, outputType) = EventTypeRegistry.GetTypes(eventName);
+
         string inputJson;
         using (var reader = new StreamReader(Console.OpenStandardInput()))
         {
             inputJson = await reader.ReadToEndAsync();
         }
 
-        HookInput input;
+        // Deserialize to specific input type
+        object? inputObj;
         try
         {
-            input = JsonSerializer.Deserialize<HookInput>(inputJson, jsonOptions) ?? new HookInput();
-            input = input with { EventType = eventName };
+            inputObj = JsonSerializer.Deserialize(inputJson, inputType, jsonOptions);
+            if (inputObj == null)
+            {
+                logger.LogError("Failed to deserialize hook input to {InputType}", inputType.Name);
+                inputObj = Activator.CreateInstance(inputType);
+            }
         }
         catch (JsonException ex)
         {
             logger.LogError(ex, "Failed to deserialize hook input");
-            input = new HookInput { EventType = eventName };
+            inputObj = Activator.CreateInstance(inputType);
         }
 
-        var userPluginPath = !string.IsNullOrEmpty(input.Cwd)
-            ? Path.Combine(input.Cwd, ".claude", "hooks", "dot-hooks")
+        // Extract common properties for logging
+        var sessionIdProp = inputType.GetProperty("SessionId");
+        var cwdProp = inputType.GetProperty("Cwd");
+        var sessionId = sessionIdProp?.GetValue(inputObj)?.ToString() ?? string.Empty;
+        var cwd = cwdProp?.GetValue(inputObj)?.ToString() ?? string.Empty;
+
+        var userPluginPath = !string.IsNullOrEmpty(cwd)
+            ? Path.Combine(cwd, ".claude", "hooks", "dot-hooks")
             : null;
 
-        var stateDirectory = !string.IsNullOrEmpty(input.Cwd)
-            ? Path.Combine(input.Cwd, ".claude", "state")
+        var stateDirectory = !string.IsNullOrEmpty(cwd)
+            ? Path.Combine(cwd, ".claude", "state")
             : Path.Combine(Directory.GetCurrentDirectory(), ".claude", "state");
 
         string? sessionLogFile = null;
         string? pluginLogDirectory = null;
-        if (!string.IsNullOrEmpty(input.SessionId))
+        if (!string.IsNullOrEmpty(sessionId))
         {
-            var sessionDirectory = Path.Combine(stateDirectory, input.SessionId);
+            var sessionDirectory = Path.Combine(stateDirectory, sessionId);
             Directory.CreateDirectory(sessionDirectory);
             sessionLogFile = Path.Combine(sessionDirectory, "dot-hooks.log");
 
-            // Create plugins subdirectory for per-plugin logs
             pluginLogDirectory = Path.Combine(sessionDirectory, "plugins");
             Directory.CreateDirectory(pluginLogDirectory);
 
-            // Write session start marker to log
             await File.AppendAllTextAsync(sessionLogFile,
-                $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Session: {input.SessionId}, Event: {eventName}\n");
+                $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] Session: {sessionId}, Event: {eventName}\n");
         }
 
-        var plugins = await pluginLoader.LoadPluginsAsync(globalPluginPath, userPluginPath);
+        // Load handler types
+        var handlerTypes = await pluginLoader.LoadHandlerTypesAsync(globalPluginPath, userPluginPath);
 
-        var outputs = new List<HookOutput>();
-        foreach (var plugin in plugins)
+        // Get handlers for this specific event
+        var handlers = pluginLoader.GetHandlersForEvent(handlerTypes, inputType, outputType);
+
+        logger.LogInformation("Found {Count} handler(s) for event {EventName}", handlers.Count, eventName);
+
+        var outputs = new List<HookOutputBase>();
+        foreach (var handler in handlers)
         {
-            // Per-plugin log file
+            var handlerName = pluginLoader.GetHandlerName(handler);
             string? pluginLogFile = null;
             if (pluginLogDirectory != null)
             {
-                pluginLogFile = Path.Combine(pluginLogDirectory, $"{plugin.Name}.log");
+                pluginLogFile = Path.Combine(pluginLogDirectory, $"{handlerName}.log");
             }
 
             try
             {
                 var timestamp = DateTime.UtcNow;
-                logger.LogDebug("Executing plugin: {PluginName}", plugin.Name);
+                logger.LogDebug("Executing handler: {HandlerName}", handlerName);
 
-                // Write to main session log
                 if (sessionLogFile != null)
                 {
                     await File.AppendAllTextAsync(sessionLogFile,
-                        $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff}] Executing plugin: {plugin.Name}\n");
+                        $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff}] Executing plugin: {handlerName}\n");
                 }
 
-                // Write to per-plugin log
                 if (pluginLogFile != null)
                 {
                     await File.AppendAllTextAsync(pluginLogFile,
                         $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff}] Event: {eventName}\n");
                     await File.AppendAllTextAsync(pluginLogFile,
-                        $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff}] Session: {input.SessionId}\n");
-                    if (!string.IsNullOrEmpty(input.ToolName))
+                        $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff}] Session: {sessionId}\n");
+
+                    // Log tool name if this is a tool event
+                    if (inputType == typeof(ToolEventInput))
                     {
-                        await File.AppendAllTextAsync(pluginLogFile,
-                            $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff}] Tool: {input.ToolName}\n");
+                        var toolNameProp = inputType.GetProperty("ToolName");
+                        var toolName = toolNameProp?.GetValue(inputObj)?.ToString();
+                        if (!string.IsNullOrEmpty(toolName))
+                        {
+                            await File.AppendAllTextAsync(pluginLogFile,
+                                $"[{timestamp:yyyy-MM-dd HH:mm:ss.fff}] Tool: {toolName}\n");
+                        }
                     }
                 }
 
-                var output = await plugin.ExecuteAsync(input, CancellationToken.None);
-                outputs.Add(output);
-
-                var completionTimestamp = DateTime.UtcNow;
-                var duration = (completionTimestamp - timestamp).TotalMilliseconds;
-
-                // Write to main session log
-                if (sessionLogFile != null)
+                // Invoke HandleAsync method
+                var handleMethod = handler.GetType().GetMethod("HandleAsync");
+                if (handleMethod != null)
                 {
-                    await File.AppendAllTextAsync(sessionLogFile,
-                        $"[{completionTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Plugin {plugin.Name} completed: decision={output.Decision}, continue={output.Continue}\n");
-                }
-
-                // Write to per-plugin log
-                if (pluginLogFile != null)
-                {
-                    await File.AppendAllTextAsync(pluginLogFile,
-                        $"[{completionTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Completed: decision={output.Decision}, continue={output.Continue}, duration={duration:F2}ms\n\n");
-                }
-
-                if (!output.Continue || output.Decision == "block")
-                {
-                    logger.LogWarning("Plugin {PluginName} blocked execution: {Reason}",
-                        plugin.Name, output.StopReason);
-
-                    if (sessionLogFile != null)
+                    var task = handleMethod.Invoke(handler, new[] { inputObj, CancellationToken.None }) as Task;
+                    if (task != null)
                     {
-                        await File.AppendAllTextAsync(sessionLogFile,
-                            $"[{completionTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Plugin {plugin.Name} BLOCKED: {output.StopReason}\n");
-                    }
+                        await task;
+                        var resultProperty = task.GetType().GetProperty("Result");
+                        var output = resultProperty?.GetValue(task) as HookOutputBase;
 
-                    if (pluginLogFile != null)
-                    {
-                        await File.AppendAllTextAsync(pluginLogFile,
-                            $"[{completionTimestamp:yyyy-MM-dd HH:mm:ss.fff}] BLOCKED: {output.StopReason}\n\n");
-                    }
+                        if (output != null)
+                        {
+                            outputs.Add(output);
 
-                    var blockingJson = JsonSerializer.Serialize(output, jsonOptions);
-                    await Console.Out.WriteAsync(blockingJson);
-                    return 2;
+                            var completionTimestamp = DateTime.UtcNow;
+                            var duration = (completionTimestamp - timestamp).TotalMilliseconds;
+
+                            if (sessionLogFile != null)
+                            {
+                                await File.AppendAllTextAsync(sessionLogFile,
+                                    $"[{completionTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Plugin {handlerName} completed: decision={output.Decision}, continue={output.Continue}\n");
+                            }
+
+                            if (pluginLogFile != null)
+                            {
+                                await File.AppendAllTextAsync(pluginLogFile,
+                                    $"[{completionTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Completed: decision={output.Decision}, continue={output.Continue}, duration={duration:F2}ms\n\n");
+                            }
+
+                            if (!output.Continue || output.Decision == "block")
+                            {
+                                logger.LogWarning("Handler {HandlerName} blocked execution: {Reason}",
+                                    handlerName, output.StopReason);
+
+                                if (sessionLogFile != null)
+                                {
+                                    await File.AppendAllTextAsync(sessionLogFile,
+                                        $"[{completionTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Plugin {handlerName} BLOCKED: {output.StopReason}\n");
+                                }
+
+                                if (pluginLogFile != null)
+                                {
+                                    await File.AppendAllTextAsync(pluginLogFile,
+                                        $"[{completionTimestamp:yyyy-MM-dd HH:mm:ss.fff}] BLOCKED: {output.StopReason}\n\n");
+                                }
+
+                                var blockingJson = JsonSerializer.Serialize(output, outputType, jsonOptions);
+                                await Console.Out.WriteAsync(blockingJson);
+                                return 2;
+                            }
+                        }
+                    }
                 }
             }
             catch (Exception ex)
             {
                 var errorTimestamp = DateTime.UtcNow;
-                logger.LogError(ex, "Plugin {PluginName} threw an exception", plugin.Name);
+                logger.LogError(ex, "Handler {HandlerName} threw an exception", handlerName);
 
                 if (sessionLogFile != null)
                 {
                     await File.AppendAllTextAsync(sessionLogFile,
-                        $"[{errorTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Plugin {plugin.Name} ERROR: {ex.Message}\n");
+                        $"[{errorTimestamp:yyyy-MM-dd HH:mm:ss.fff}] Plugin {handlerName} ERROR: {ex.Message}\n");
                 }
 
                 if (pluginLogFile != null)
@@ -232,8 +270,8 @@ async Task<int> HandleHookEventAsync(string eventName)
             }
         }
 
-        var aggregatedOutput = AggregateOutputs(outputs);
-        var outputJson = JsonSerializer.Serialize(aggregatedOutput, jsonOptions);
+        var aggregatedOutput = AggregateOutputs(outputs, outputType);
+        var outputJson = JsonSerializer.Serialize(aggregatedOutput, outputType, jsonOptions);
         await Console.Out.WriteAsync(outputJson);
 
         logger.LogInformation("Hook event {EventName} completed successfully", eventName);
@@ -254,10 +292,17 @@ async Task<int> HandleHookEventAsync(string eventName)
     }
 }
 
-HookOutput AggregateOutputs(List<HookOutput> outputs)
+[UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode", Justification = "Dynamic type instantiation requires reflection")]
+[UnconditionalSuppressMessage("Trimming", "IL2070:UnrecognizedReflectionPattern", Justification = "Dynamic type instantiation requires reflection")]
+HookOutputBase AggregateOutputs(List<HookOutputBase> outputs, Type outputType)
 {
     if (outputs.Count == 0)
-        return HookOutput.Success();
+    {
+        // Create default success output
+        var successMethod = typeof(HookOutputBase).GetMethod(nameof(HookOutputBase.Success))!;
+        var genericSuccess = successMethod.MakeGenericMethod(outputType);
+        return (HookOutputBase)genericSuccess.Invoke(null, null)!;
+    }
 
     var allContext = outputs
         .Where(o => !string.IsNullOrEmpty(o.AdditionalContext))
@@ -277,7 +322,9 @@ HookOutput AggregateOutputs(List<HookOutput> outputs)
         ? string.Join("\n", allMessages)
         : null;
 
-    return new HookOutput
+    // Create output instance
+    var output = Activator.CreateInstance(outputType) as HookOutputBase;
+    return output! with
     {
         Decision = "approve",
         Continue = true,
@@ -289,7 +336,8 @@ HookOutput AggregateOutputs(List<HookOutput> outputs)
 // SHARED TYPES - Used by both Program.cs and tests
 // =============================================================================
 
-public record HookInput
+// Base Types
+public abstract record HookInputBase<TOutput> where TOutput : HookOutputBase
 {
     [JsonPropertyName("session_id")]
     public string SessionId { get; init; } = string.Empty;
@@ -302,21 +350,9 @@ public record HookInput
 
     [JsonPropertyName("permission_mode")]
     public string PermissionMode { get; init; } = string.Empty;
-
-    [JsonPropertyName("event_type")]
-    public string EventType { get; init; } = string.Empty;
-
-    [JsonPropertyName("tool_name")]
-    public string? ToolName { get; init; }
-
-    [JsonPropertyName("tool_parameters")]
-    public Dictionary<string, object>? ToolParameters { get; init; }
-
-    [JsonPropertyName("additional_data")]
-    public Dictionary<string, object>? AdditionalData { get; init; }
 }
 
-public record HookOutput
+public abstract record HookOutputBase
 {
     [JsonPropertyName("decision")]
     public string? Decision { get; init; }
@@ -333,15 +369,90 @@ public record HookOutput
     [JsonPropertyName("additionalContext")]
     public string? AdditionalContext { get; init; }
 
-    public static HookOutput Success() => new() { Decision = "approve", Continue = true };
-    public static HookOutput Block(string reason) => new() { Decision = "block", Continue = false, StopReason = reason };
-    public static HookOutput WithContext(string context) => new() { Decision = "approve", Continue = true, AdditionalContext = context };
+    // Factory methods for common outputs
+    public static TOutput Success<TOutput>() where TOutput : HookOutputBase, new()
+        => new() { Decision = "approve", Continue = true };
+
+    public static TOutput Block<TOutput>(string reason) where TOutput : HookOutputBase, new()
+        => new() { Decision = "block", Continue = false, StopReason = reason };
+
+    public static TOutput WithContext<TOutput>(string context) where TOutput : HookOutputBase, new()
+        => new() { Decision = "approve", Continue = true, AdditionalContext = context };
 }
 
-public interface IHookPlugin
+// Event-Specific Types
+public record ToolEventInput : HookInputBase<ToolEventOutput>
+{
+    [JsonPropertyName("tool_name")]
+    public string ToolName { get; init; } = string.Empty;
+
+    [JsonPropertyName("tool_parameters")]
+    public Dictionary<string, object>? ToolParameters { get; init; }
+}
+
+public record ToolEventOutput : HookOutputBase
+{
+}
+
+public record SessionEventInput : HookInputBase<SessionEventOutput>
+{
+}
+
+public record SessionEventOutput : HookOutputBase
+{
+}
+
+public record GenericEventInput : HookInputBase<GenericEventOutput>
+{
+    [JsonPropertyName("additional_data")]
+    public Dictionary<string, object>? AdditionalData { get; init; }
+}
+
+public record GenericEventOutput : HookOutputBase
+{
+}
+
+// Generic Handler Interface
+public interface IHookEventHandler<TInput, TOutput>
+    where TInput : HookInputBase<TOutput>
+    where TOutput : HookOutputBase
 {
     string Name { get; }
-    Task<HookOutput> ExecuteAsync(HookInput input, CancellationToken cancellationToken = default);
+    Task<TOutput> HandleAsync(TInput input, CancellationToken cancellationToken = default);
+}
+
+// Event Type Registry
+public static class EventTypeRegistry
+{
+    private static readonly Dictionary<string, (Type InputType, Type OutputType)> _eventTypes = new()
+    {
+        // Tool events
+        ["pre-tool-use"] = (typeof(ToolEventInput), typeof(ToolEventOutput)),
+        ["post-tool-use"] = (typeof(ToolEventInput), typeof(ToolEventOutput)),
+
+        // Session events
+        ["session-start"] = (typeof(SessionEventInput), typeof(SessionEventOutput)),
+        ["session-end"] = (typeof(SessionEventInput), typeof(SessionEventOutput)),
+
+        // Generic events
+        ["user-prompt-submit"] = (typeof(GenericEventInput), typeof(GenericEventOutput)),
+        ["notification"] = (typeof(GenericEventInput), typeof(GenericEventOutput)),
+        ["stop"] = (typeof(GenericEventInput), typeof(GenericEventOutput)),
+        ["subagent-stop"] = (typeof(GenericEventInput), typeof(GenericEventOutput)),
+        ["pre-compact"] = (typeof(GenericEventInput), typeof(GenericEventOutput))
+    };
+
+    public static (Type InputType, Type OutputType) GetTypes(string eventName)
+    {
+        if (_eventTypes.TryGetValue(eventName, out var types))
+        {
+            return types;
+        }
+
+        throw new ArgumentException($"Unknown event type: {eventName}", nameof(eventName));
+    }
+
+    public static bool IsValidEvent(string eventName) => _eventTypes.ContainsKey(eventName);
 }
 
 // =============================================================================
@@ -351,39 +462,39 @@ public interface IHookPlugin
 public class PluginLoader
 {
     private readonly ILogger<PluginLoader> _logger;
-    private readonly ILoggerFactory _loggerFactory;
+    private readonly IServiceProvider _serviceProvider;
 
-    public PluginLoader(ILogger<PluginLoader> logger, ILoggerFactory loggerFactory)
+    public PluginLoader(ILogger<PluginLoader> logger, IServiceProvider serviceProvider)
     {
         _logger = logger;
-        _loggerFactory = loggerFactory;
+        _serviceProvider = serviceProvider;
     }
 
-    public async Task<List<IHookPlugin>> LoadPluginsAsync(string globalPluginPath, string? userPluginPath = null)
+    public async Task<List<Type>> LoadHandlerTypesAsync(string globalPluginPath, string? userPluginPath = null)
     {
-        var plugins = new List<IHookPlugin>();
+        var handlerTypes = new List<Type>();
 
         if (Directory.Exists(globalPluginPath))
         {
             _logger.LogDebug("Loading global plugins from: {Path}", globalPluginPath);
-            var globalPlugins = await LoadPluginsFromDirectoryAsync(globalPluginPath);
-            plugins.AddRange(globalPlugins);
+            var globalTypes = await LoadHandlerTypesFromDirectoryAsync(globalPluginPath);
+            handlerTypes.AddRange(globalTypes);
         }
 
         if (!string.IsNullOrEmpty(userPluginPath) && Directory.Exists(userPluginPath))
         {
             _logger.LogDebug("Loading user plugins from: {Path}", userPluginPath);
-            var userPlugins = await LoadPluginsFromDirectoryAsync(userPluginPath);
-            plugins.AddRange(userPlugins);
+            var userTypes = await LoadHandlerTypesFromDirectoryAsync(userPluginPath);
+            handlerTypes.AddRange(userTypes);
         }
 
-        _logger.LogInformation("Loaded {Count} plugin(s)", plugins.Count);
-        return plugins;
+        _logger.LogInformation("Discovered {Count} handler type(s)", handlerTypes.Count);
+        return handlerTypes;
     }
 
-    private async Task<List<IHookPlugin>> LoadPluginsFromDirectoryAsync(string directory)
+    private async Task<List<Type>> LoadHandlerTypesFromDirectoryAsync(string directory)
     {
-        var plugins = new List<IHookPlugin>();
+        var handlerTypes = new List<Type>();
         var sourceFiles = Directory.GetFiles(directory, "*.cs", SearchOption.TopDirectoryOnly)
             .OrderBy(f => f)
             .ToList();
@@ -393,12 +504,9 @@ public class PluginLoader
             try
             {
                 _logger.LogDebug("Compiling plugin: {File}", Path.GetFileName(sourceFile));
-                var plugin = await CompileAndLoadPluginAsync(sourceFile);
-                if (plugin != null)
-                {
-                    plugins.Add(plugin);
-                    _logger.LogInformation("Loaded plugin: {Name}", plugin.Name);
-                }
+                var types = await CompileAndDiscoverHandlersAsync(sourceFile);
+                handlerTypes.AddRange(types);
+                _logger.LogInformation("Discovered {Count} handler(s) from {File}", types.Count, Path.GetFileName(sourceFile));
             }
             catch (Exception ex)
             {
@@ -406,7 +514,71 @@ public class PluginLoader
             }
         }
 
-        return plugins;
+        return handlerTypes;
+    }
+
+    public List<object> GetHandlersForEvent(List<Type> handlerTypes, Type inputType, Type outputType)
+    {
+        var handlerInterfaceType = typeof(IHookEventHandler<,>).MakeGenericType(inputType, outputType);
+
+        var matchingHandlers = handlerTypes
+            .Where(t => handlerInterfaceType.IsAssignableFrom(t))
+            .Select(t => CreateHandlerInstance(t))
+            .OfType<object>() // Filter out nulls and convert to non-nullable
+            .OrderBy(h => GetHandlerName(h))
+            .ToList();
+
+        return matchingHandlers;
+    }
+
+    public string GetHandlerName(object handler)
+    {
+        var nameProperty = handler.GetType().GetProperty("Name");
+        return nameProperty?.GetValue(handler)?.ToString() ?? handler.GetType().Name;
+    }
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode", Justification = "Dynamic plugin instantiation requires reflection")]
+    [UnconditionalSuppressMessage("Trimming", "IL2077:UnrecognizedReflectionPattern", Justification = "Dynamic plugin instantiation requires reflection")]
+    private object? CreateHandlerInstance(Type handlerType)
+    {
+        try
+        {
+            // Get all constructors ordered by parameter count (prefer more specific)
+            var constructors = handlerType.GetConstructors()
+                .OrderByDescending(c => c.GetParameters().Length)
+                .ToList();
+
+            foreach (var constructor in constructors)
+            {
+                var parameters = constructor.GetParameters();
+                var args = new List<object?>();
+                bool canConstruct = true;
+
+                foreach (var param in parameters)
+                {
+                    var service = _serviceProvider.GetService(param.ParameterType);
+                    if (service == null && !param.IsOptional)
+                    {
+                        canConstruct = false;
+                        break;
+                    }
+                    args.Add(service ?? param.DefaultValue);
+                }
+
+                if (canConstruct)
+                {
+                    return constructor.Invoke(args.ToArray());
+                }
+            }
+
+            _logger.LogWarning("Could not resolve dependencies for {Type}", handlerType.Name);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to create instance of {Type}", handlerType.Name);
+            return null;
+        }
     }
 
     [UnconditionalSuppressMessage("SingleFile", "IL3000:Avoid accessing Assembly file path", Justification = "File-based app using dotnet run, not single-file deployment")]
@@ -414,7 +586,7 @@ public class PluginLoader
     [UnconditionalSuppressMessage("Trimming", "IL2072:UnrecognizedReflectionPattern", Justification = "Dynamic plugin instantiation requires reflection")]
     [UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern", Justification = "Dynamic plugin compilation requires reflection")]
     [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode", Justification = "Dynamic plugin compilation not compatible with AOT")]
-    private async Task<IHookPlugin?> CompileAndLoadPluginAsync(string sourceFile)
+    private async Task<List<Type>> CompileAndDiscoverHandlersAsync(string sourceFile)
     {
         var sourceCode = await File.ReadAllTextAsync(sourceFile);
 
@@ -425,6 +597,7 @@ public class PluginLoader
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using System.Collections.Generic;
 
 ";
             sourceCode = usings + sourceCode;
@@ -436,7 +609,7 @@ using Microsoft.Extensions.Logging;
         {
             MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
             MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(IHookPlugin).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(IHookEventHandler<,>).Assembly.Location),
             MetadataReference.CreateFromFile(typeof(ILogger).Assembly.Location),
             MetadataReference.CreateFromFile(Assembly.Load("System.Runtime").Location),
             MetadataReference.CreateFromFile(Assembly.Load("System.Collections").Location),
@@ -471,31 +644,25 @@ using Microsoft.Extensions.Logging;
                     Path.GetFileName(sourceFile), diagnostic.GetMessage());
             }
 
-            return null;
+            return new List<Type>();
         }
 
         ms.Seek(0, SeekOrigin.Begin);
         var assembly = AssemblyLoadContext.Default.LoadFromStream(ms);
 
-        var pluginType = assembly.GetTypes()
-            .FirstOrDefault(t => typeof(IHookPlugin).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract);
+        // Discover all types implementing IHookEventHandler<,>
+        var handlerTypes = assembly.GetTypes()
+            .Where(t => t.IsClass && !t.IsAbstract)
+            .Where(t => t.GetInterfaces().Any(i =>
+                i.IsGenericType &&
+                i.GetGenericTypeDefinition() == typeof(IHookEventHandler<,>)))
+            .ToList();
 
-        if (pluginType == null)
+        if (handlerTypes.Count == 0)
         {
-            _logger.LogWarning("No IHookPlugin implementation found in {File}", Path.GetFileName(sourceFile));
-            return null;
+            _logger.LogWarning("No IHookEventHandler<,> implementations found in {File}", Path.GetFileName(sourceFile));
         }
 
-        // Try to create plugin with logger if constructor accepts it
-        var pluginLogger = _loggerFactory.CreateLogger(pluginType);
-        var loggerConstructor = pluginType.GetConstructor(new[] { typeof(ILogger) });
-
-        if (loggerConstructor != null)
-        {
-            return loggerConstructor.Invoke(new object[] { pluginLogger }) as IHookPlugin;
-        }
-
-        // Fall back to parameterless constructor
-        return Activator.CreateInstance(pluginType) as IHookPlugin;
+        return handlerTypes;
     }
 }

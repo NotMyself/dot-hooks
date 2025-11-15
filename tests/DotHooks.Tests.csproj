@@ -26,8 +26,7 @@
   <ItemGroup>
     <!-- Include shared types and plugin loader from hooks directory -->
     <Compile Include="../hooks/SharedTypes.cs" Link="Shared/SharedTypes.cs" />
-    <Compile Include="../hooks/PluginLoader.cs" Link="Shared/PluginLoader.cs" />
-    <Compile Include="../hooks/plugins/**/*.cs" Link="Shared/Plugins/%(RecursiveDir)%(Filename)%(Extension)" />
+    <!-- Plugins are NOT compiled directly - they're compiled dynamically by PluginLoader at runtime -->
   </ItemGroup>
 
 </Project>
