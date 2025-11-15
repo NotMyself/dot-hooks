@@ -1,0 +1,62 @@
+name: Release Claude Code Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run tests
+        run: dotnet test tests/DotHooks.Tests.csproj --configuration Release
+
+      - name: Verify version consistency
+        run: |
+          PLUGIN_VERSION=$(jq -r '.version' .claude-plugin/plugin.json)
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+
+          if [ "$PLUGIN_VERSION" != "$TAG_VERSION" ]; then
+            echo "Version mismatch!"
+            echo "plugin.json: $PLUGIN_VERSION"
+            echo "Git tag: $TAG_VERSION"
+            exit 1
+          fi
+
+          echo "Version check passed: $PLUGIN_VERSION"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            ```bash
+            /plugin marketplace add NotMyself/claude-dotnet-marketplace
+            ```
+
+            ## Update Existing Installation
+
+            ```bash
+            /plugin marketplace update notmyself-marketplace
+            ```
+          files: |
+            LICENSE
+            README.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

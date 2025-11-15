@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore tests/DotHooks.Tests.csproj
+
+      - name: Build
+        run: dotnet build tests/DotHooks.Tests.csproj --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test tests/DotHooks.Tests.csproj --configuration Release --no-build --verbosity normal
+
+      - name: Validate plugin manifest
+        run: |
+          # Check plugin.json is valid JSON
+          jq empty .claude-plugin/plugin.json || exit 1
+
+          # Check hooks.json is valid JSON
+          jq empty hooks/hooks.json || exit 1
+
+          # Check version is present
+          PLUGIN_VERSION=$(jq -r '.version' .claude-plugin/plugin.json)
+          if [ -z "$PLUGIN_VERSION" ] || [ "$PLUGIN_VERSION" = "null" ]; then
+            echo "Version missing in plugin.json"
+            exit 1
+          fi
+
+          echo "Plugin version: $PLUGIN_VERSION"

@@ -16,5 +16,6 @@
     "wsl",
     "automation",
     "plugin-framework"
-  ]
+  ],
+  "hooks": "./hooks/hooks.json"
 }
