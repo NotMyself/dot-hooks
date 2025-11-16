@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2025-11-15
+
+### Added
+- Externalized configuration system using .NET 10 `IConfiguration`
+- Strongly-typed settings classes (`DotHooksSettings`, `LoggingSettings`, `PathSettings`, etc.)
+- Multi-layer configuration priority (base → environment → project → user → env vars)
+- Project-level configuration support at `{project}/.claude/dot-hooks/appsettings.json`
+- User-level configuration support at `~/.claude/dot-hooks/appsettings.user.json` and `~/.config/dot-hooks/appsettings.json`
+- Environment variable configuration with `DOTHOOKS_` prefix
+- Hook enable/disable feature via configuration
+- Plugin enable/disable feature (global and user plugins separately)
+- Configuration example files (`appsettings.project.json.example`, `appsettings.user.json.example`)
+- IOptions<T> pattern for dependency injection integration
+- Comprehensive configuration tests (13 new tests)
+- Configuration system documentation in SPEC.md
+
+### Changed
+- Hardcoded settings now externalized to `appsettings.json`
+- Logging levels configurable via settings
+- Path conventions customizable via configuration
+- Per-event project configuration loading
+
+### Fixed
+- All 39 tests passing including new configuration tests
+
 ## [0.2.1] - 2025-11-15
 
 ### Added
@@ -50,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Handler discovery correctly identifies generic interface implementations
 - Type constraint validation prevents mismatched Input/Output types at compile time
 
-[Unreleased]: https://github.com/NotMyself/dot-hooks/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/NotMyself/dot-hooks/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/NotMyself/dot-hooks/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/NotMyself/dot-hooks/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/NotMyself/dot-hooks/releases/tag/v0.2.0

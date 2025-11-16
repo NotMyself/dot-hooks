@@ -130,6 +130,64 @@ public static class EventTypeRegistry
 }
 
 // =============================================================================
+// CONFIGURATION SETTINGS - Strongly-typed settings classes
+// =============================================================================
+
+public class DotHooksSettings
+{
+    public LoggingSettings Logging { get; set; } = new();
+    public PathSettings Paths { get; set; } = new();
+    public CompilationSettings Compilation { get; set; } = new();
+    public HookSettings Hooks { get; set; } = new();
+    public PluginSettings Plugins { get; set; } = new();
+}
+
+public class LoggingSettings
+{
+    public string MinimumLevel { get; set; } = "Information";
+    public string ConsoleThreshold { get; set; } = "Trace";
+}
+
+public class PathSettings
+{
+    public string HooksDirectory { get; set; } = "hooks";
+    public string PluginsDirectory { get; set; } = "plugins";
+    public string ClaudeDirectory { get; set; } = ".claude";
+    public string DotHooksDirectory { get; set; } = "dot-hooks";
+    public string StateDirectory { get; set; } = "state";
+    public string SessionLogFileName { get; set; } = "dot-hooks.log";
+    public string PluginLogDirectory { get; set; } = "plugins";
+}
+
+public class CompilationSettings
+{
+    public string LanguageVersion { get; set; } = "CSharp12";
+}
+
+public class HookSettings
+{
+    public int DefaultTimeoutMs { get; set; } = 30000;
+    public Dictionary<string, bool> EnabledHooks { get; set; } = new()
+    {
+        ["pre-tool-use"] = true,
+        ["post-tool-use"] = true,
+        ["user-prompt-submit"] = true,
+        ["notification"] = true,
+        ["stop"] = true,
+        ["subagent-stop"] = true,
+        ["session-start"] = true,
+        ["session-end"] = true,
+        ["pre-compact"] = true
+    };
+}
+
+public class PluginSettings
+{
+    public bool EnableGlobalPlugins { get; set; } = true;
+    public bool EnableUserPlugins { get; set; } = true;
+}
+
+// =============================================================================
 // PLUGIN LOADER - Used by both Program.cs and tests
 // =============================================================================
 

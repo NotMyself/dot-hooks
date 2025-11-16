@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "User-level configuration example. Copy to one of these locations (higher priority wins):",
+  "$locations": [
+    "~/.claude/dot-hooks/appsettings.user.json (recommended, higher priority)",
+    "~/.config/dot-hooks/appsettings.json (XDG standard, lower priority)"
+  ],
+  "Logging": {
+    "MinimumLevel": "Information",
+    "ConsoleThreshold": "Trace",
+    "$comment": "Options: Trace, Debug, Information, Warning, Error, Critical, None"
+  },
+  "Paths": {
+    "$comment": "Only override these if you have a custom installation structure",
+    "HooksDirectory": "hooks",
+    "PluginsDirectory": "plugins",
+    "ClaudeDirectory": ".claude",
+    "DotHooksDirectory": "dot-hooks",
+    "StateDirectory": "state",
+    "SessionLogFileName": "dot-hooks.log",
+    "PluginLogDirectory": "plugins"
+  },
+  "Compilation": {
+    "LanguageVersion": "CSharp12"
+  },
+  "Hooks": {
+    "DefaultTimeoutMs": 30000,
+    "EnabledHooks": {
+      "$comment": "Globally disable specific hooks across all projects",
+      "pre-tool-use": true,
+      "post-tool-use": true,
+      "user-prompt-submit": true,
+      "notification": true,
+      "stop": true,
+      "subagent-stop": true,
+      "session-start": true,
+      "session-end": true,
+      "pre-compact": true
+    }
+  },
+  "Plugins": {
+    "EnableGlobalPlugins": true,
+    "EnableUserPlugins": true
+  }
+}

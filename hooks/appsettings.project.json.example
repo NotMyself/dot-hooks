@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Project-level configuration example. Copy to {project}/.claude/dot-hooks/appsettings.json",
+  "Logging": {
+    "MinimumLevel": "Debug",
+    "$comment": "Options: Trace, Debug, Information, Warning, Error, Critical, None"
+  },
+  "Hooks": {
+    "EnabledHooks": {
+      "pre-tool-use": true,
+      "post-tool-use": false,
+      "$comment": "Disable specific hooks for this project",
+      "user-prompt-submit": true,
+      "notification": false,
+      "stop": true,
+      "subagent-stop": true,
+      "session-start": true,
+      "session-end": true,
+      "pre-compact": true
+    }
+  },
+  "Plugins": {
+    "EnableGlobalPlugins": true,
+    "EnableUserPlugins": true,
+    "$comment": "Set EnableGlobalPlugins to false to only use project-specific plugins"
+  }
+}

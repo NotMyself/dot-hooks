@@ -3,13 +3,20 @@
 #:package Microsoft.Extensions.Logging@10.0.0
 #:package Microsoft.Extensions.Logging.Console@10.0.0
 #:package Microsoft.Extensions.DependencyInjection@10.0.0
+#:package Microsoft.Extensions.Configuration@10.0.0
+#:package Microsoft.Extensions.Configuration.Json@10.0.0
+#:package Microsoft.Extensions.Configuration.EnvironmentVariables@10.0.0
+#:package Microsoft.Extensions.Configuration.Binder@10.0.0
+#:package Microsoft.Extensions.Options@10.0.0
 
 using System.CommandLine;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using System.Reflection;
@@ -18,22 +25,6 @@ using System.Runtime.Loader;
 // =============================================================================
 // MAIN PROGRAM (must be first - top-level statements)
 // =============================================================================
-
-var services = new ServiceCollection();
-services.AddLogging(builder =>
-{
-    builder.AddConsole(options =>
-    {
-        // Force all console output to stderr to keep stdout clean for HookOutput JSON
-        options.LogToStandardErrorThreshold = LogLevel.Trace;
-    });
-    builder.SetMinimumLevel(LogLevel.Information);
-});
-services.AddSingleton<PluginLoader>();
-
-var serviceProvider = services.BuildServiceProvider();
-var logger = serviceProvider.GetRequiredService<ILogger<Program>>();
-var pluginLoader = serviceProvider.GetRequiredService<PluginLoader>();
 
 // Determine plugin root - if env var not set and we're in hooks dir, go up one level
 var pluginRoot = Environment.GetEnvironmentVariable("CLAUDE_PLUGIN_ROOT");
@@ -46,7 +37,63 @@ if (string.IsNullOrEmpty(pluginRoot))
         : currentDir;
 }
 
-var globalPluginPath = Path.Combine(pluginRoot, "hooks", "plugins");
+// Build configuration with layered priority (lowest to highest)
+var environment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? "Production";
+var hooksDirectory = Path.Combine(pluginRoot, "hooks");
+var homeDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+var configuration = new ConfigurationBuilder()
+    // Base: Installation defaults
+    .AddJsonFile(Path.Combine(hooksDirectory, "appsettings.json"), optional: true, reloadOnChange: false)
+    // Environment: Development/Production
+    .AddJsonFile(Path.Combine(hooksDirectory, $"appsettings.{environment}.json"), optional: true, reloadOnChange: false)
+    // Project-level: Per-project overrides (cwd will be set per-event, this is for early init only)
+    // User-level 1: XDG standard location
+    .AddJsonFile(Path.Combine(homeDirectory, ".config", "dot-hooks", "appsettings.json"), optional: true, reloadOnChange: false)
+    // User-level 2: .claude directory (higher priority)
+    .AddJsonFile(Path.Combine(homeDirectory, ".claude", "dot-hooks", "appsettings.user.json"), optional: true, reloadOnChange: false)
+    // Environment variables (highest priority)
+    .AddEnvironmentVariables(prefix: "DOTHOOKS_")
+    .Build();
+
+// Bind settings
+var settings = new DotHooksSettings();
+configuration.Bind(settings);
+
+// Setup DI container
+var services = new ServiceCollection();
+services.AddSingleton<IConfiguration>(configuration);
+services.Configure<DotHooksSettings>(configuration);
+services.Configure<LoggingSettings>(configuration.GetSection("Logging"));
+services.Configure<PathSettings>(configuration.GetSection("Paths"));
+services.Configure<CompilationSettings>(configuration.GetSection("Compilation"));
+services.Configure<HookSettings>(configuration.GetSection("Hooks"));
+services.Configure<PluginSettings>(configuration.GetSection("Plugins"));
+
+// Parse logging level from settings
+var minLogLevel = Enum.TryParse<LogLevel>(settings.Logging.MinimumLevel, out var parsedLevel)
+    ? parsedLevel
+    : LogLevel.Information;
+var consoleThreshold = Enum.TryParse<LogLevel>(settings.Logging.ConsoleThreshold, out var parsedThreshold)
+    ? parsedThreshold
+    : LogLevel.Trace;
+
+services.AddLogging(builder =>
+{
+    builder.AddConsole(options =>
+    {
+        // Force all console output to stderr to keep stdout clean for HookOutput JSON
+        options.LogToStandardErrorThreshold = consoleThreshold;
+    });
+    builder.SetMinimumLevel(minLogLevel);
+});
+services.AddSingleton<PluginLoader>();
+
+var serviceProvider = services.BuildServiceProvider();
+var logger = serviceProvider.GetRequiredService<ILogger<Program>>();
+var pluginLoader = serviceProvider.GetRequiredService<PluginLoader>();
+
+var globalPluginPath = Path.Combine(pluginRoot, settings.Paths.HooksDirectory, settings.Paths.PluginsDirectory);
 
 // JSON serializer options with reflection enabled
 #pragma warning disable IL2026, IL3050 // Reflection-based JSON serialization required for hook I/O
@@ -73,6 +120,13 @@ var hookEvents = new[]
 
 foreach (var eventName in hookEvents)
 {
+    // Check if hook is enabled in configuration
+    if (settings.Hooks.EnabledHooks.TryGetValue(eventName, out var isEnabled) && !isEnabled)
+    {
+        logger.LogDebug("Hook {EventName} is disabled in configuration, skipping registration", eventName);
+        continue;
+    }
+
     var command = new Command(eventName, $"Handle {eventName} hook event");
     command.SetHandler(async () => await HandleHookEventAsync(eventName));
     rootCommand.AddCommand(command);
@@ -122,13 +176,33 @@ async Task<int> HandleHookEventAsync(string eventName)
         var sessionId = sessionIdProp?.GetValue(inputObj)?.ToString() ?? string.Empty;
         var cwd = cwdProp?.GetValue(inputObj)?.ToString() ?? string.Empty;
 
-        var userPluginPath = !string.IsNullOrEmpty(cwd)
-            ? Path.Combine(cwd, ".claude", "hooks", "dot-hooks")
+        // Load project-level configuration if cwd is available
+        var projectSettings = settings;
+        if (!string.IsNullOrEmpty(cwd))
+        {
+            var projectConfigPath = Path.Combine(cwd, settings.Paths.ClaudeDirectory,
+                settings.Paths.DotHooksDirectory, "appsettings.json");
+            if (File.Exists(projectConfigPath))
+            {
+                var projectConfig = new ConfigurationBuilder()
+                    .AddConfiguration(configuration)
+                    .AddJsonFile(projectConfigPath, optional: true, reloadOnChange: false)
+                    .Build();
+
+                projectSettings = new DotHooksSettings();
+                projectConfig.Bind(projectSettings);
+
+                logger.LogDebug("Loaded project-level configuration from {Path}", projectConfigPath);
+            }
+        }
+
+        var userPluginPath = !string.IsNullOrEmpty(cwd) && projectSettings.Plugins.EnableUserPlugins
+            ? Path.Combine(cwd, projectSettings.Paths.ClaudeDirectory, projectSettings.Paths.HooksDirectory, projectSettings.Paths.DotHooksDirectory)
             : null;
 
         var stateDirectory = !string.IsNullOrEmpty(cwd)
-            ? Path.Combine(cwd, ".claude", "state")
-            : Path.Combine(Directory.GetCurrentDirectory(), ".claude", "state");
+            ? Path.Combine(cwd, projectSettings.Paths.ClaudeDirectory, projectSettings.Paths.StateDirectory)
+            : Path.Combine(Directory.GetCurrentDirectory(), projectSettings.Paths.ClaudeDirectory, projectSettings.Paths.StateDirectory);
 
         string? sessionLogFile = null;
         string? pluginLogDirectory = null;
@@ -136,9 +210,9 @@ async Task<int> HandleHookEventAsync(string eventName)
         {
             var sessionDirectory = Path.Combine(stateDirectory, sessionId);
             Directory.CreateDirectory(sessionDirectory);
-            sessionLogFile = Path.Combine(sessionDirectory, "dot-hooks.log");
+            sessionLogFile = Path.Combine(sessionDirectory, projectSettings.Paths.SessionLogFileName);
 
-            pluginLogDirectory = Path.Combine(sessionDirectory, "plugins");
+            pluginLogDirectory = Path.Combine(sessionDirectory, projectSettings.Paths.PluginLogDirectory);
             Directory.CreateDirectory(pluginLogDirectory);
 
             await File.AppendAllTextAsync(sessionLogFile,
@@ -146,7 +220,8 @@ async Task<int> HandleHookEventAsync(string eventName)
         }
 
         // Load handler types
-        var handlerTypes = await pluginLoader.LoadHandlerTypesAsync(globalPluginPath, userPluginPath);
+        var globalPath = projectSettings.Plugins.EnableGlobalPlugins ? globalPluginPath : null;
+        var handlerTypes = await pluginLoader.LoadHandlerTypesAsync(globalPath, userPluginPath);
 
         // Get handlers for this specific event
         var handlers = pluginLoader.GetHandlersForEvent(handlerTypes, inputType, outputType);
@@ -456,6 +531,64 @@ public static class EventTypeRegistry
 }
 
 // =============================================================================
+// CONFIGURATION SETTINGS - Strongly-typed settings classes
+// =============================================================================
+
+public class DotHooksSettings
+{
+    public LoggingSettings Logging { get; set; } = new();
+    public PathSettings Paths { get; set; } = new();
+    public CompilationSettings Compilation { get; set; } = new();
+    public HookSettings Hooks { get; set; } = new();
+    public PluginSettings Plugins { get; set; } = new();
+}
+
+public class LoggingSettings
+{
+    public string MinimumLevel { get; set; } = "Information";
+    public string ConsoleThreshold { get; set; } = "Trace";
+}
+
+public class PathSettings
+{
+    public string HooksDirectory { get; set; } = "hooks";
+    public string PluginsDirectory { get; set; } = "plugins";
+    public string ClaudeDirectory { get; set; } = ".claude";
+    public string DotHooksDirectory { get; set; } = "dot-hooks";
+    public string StateDirectory { get; set; } = "state";
+    public string SessionLogFileName { get; set; } = "dot-hooks.log";
+    public string PluginLogDirectory { get; set; } = "plugins";
+}
+
+public class CompilationSettings
+{
+    public string LanguageVersion { get; set; } = "CSharp12";
+}
+
+public class HookSettings
+{
+    public int DefaultTimeoutMs { get; set; } = 30000;
+    public Dictionary<string, bool> EnabledHooks { get; set; } = new()
+    {
+        ["pre-tool-use"] = true,
+        ["post-tool-use"] = true,
+        ["user-prompt-submit"] = true,
+        ["notification"] = true,
+        ["stop"] = true,
+        ["subagent-stop"] = true,
+        ["session-start"] = true,
+        ["session-end"] = true,
+        ["pre-compact"] = true
+    };
+}
+
+public class PluginSettings
+{
+    public bool EnableGlobalPlugins { get; set; } = true;
+    public bool EnableUserPlugins { get; set; } = true;
+}
+
+// =============================================================================
 // PLUGIN LOADER - Used by both Program.cs and tests
 // =============================================================================
 
@@ -470,11 +603,11 @@ public class PluginLoader
         _serviceProvider = serviceProvider;
     }
 
-    public async Task<List<Type>> LoadHandlerTypesAsync(string globalPluginPath, string? userPluginPath = null)
+    public async Task<List<Type>> LoadHandlerTypesAsync(string? globalPluginPath, string? userPluginPath = null)
     {
         var handlerTypes = new List<Type>();
 
-        if (Directory.Exists(globalPluginPath))
+        if (!string.IsNullOrEmpty(globalPluginPath) && Directory.Exists(globalPluginPath))
         {
             _logger.LogDebug("Loading global plugins from: {Path}", globalPluginPath);
             var globalTypes = await LoadHandlerTypesFromDirectoryAsync(globalPluginPath);

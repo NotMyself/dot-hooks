@@ -235,6 +235,498 @@ public class MinimalPlugin : IHookEventHandler<SessionEventInput, SessionEventOu
 
 The plugin loader automatically detects constructor parameters and resolves them from the DI container. If a service is not registered, plugin loading fails with a clear error message.
 
+## Configuration System
+
+dot-hooks uses the .NET 10 configuration system with strongly-typed settings and multi-layered priority resolution. Configuration supports environment-specific overrides, project-level customization, and user-level preferences.
+
+### Configuration Architecture
+
+**File-Based Configuration**: Uses JSON files with the standard .NET configuration provider pattern.
+
+**Strongly-Typed Settings**: Settings are bound to C# classes with default values and validation.
+
+**Multi-Layer Priority**: Configuration sources are layered with increasing priority (later sources override earlier ones).
+
+### Configuration Files
+
+#### Base Configuration (appsettings.json)
+
+Located at: `{CLAUDE_PLUGIN_ROOT}/hooks/appsettings.json`
+
+Contains installation defaults for all settings:
+
+```json
+{
+  "Logging": {
+    "MinimumLevel": "Information",
+    "ConsoleThreshold": "Trace"
+  },
+  "Paths": {
+    "HooksDirectory": "hooks",
+    "PluginsDirectory": "plugins",
+    "ClaudeDirectory": ".claude",
+    "DotHooksDirectory": "dot-hooks",
+    "StateDirectory": "state",
+    "SessionLogFileName": "dot-hooks.log",
+    "PluginLogDirectory": "plugins"
+  },
+  "Compilation": {
+    "LanguageVersion": "CSharp12"
+  },
+  "Hooks": {
+    "DefaultTimeoutMs": 30000,
+    "EnabledHooks": {
+      "pre-tool-use": true,
+      "post-tool-use": true,
+      "user-prompt-submit": true,
+      "notification": true,
+      "stop": true,
+      "subagent-stop": true,
+      "session-start": true,
+      "session-end": true,
+      "pre-compact": true
+    }
+  },
+  "Plugins": {
+    "EnableGlobalPlugins": true,
+    "EnableUserPlugins": true
+  }
+}
+```
+
+#### Environment Configuration (appsettings.{Environment}.json)
+
+Located at: `{CLAUDE_PLUGIN_ROOT}/hooks/appsettings.Development.json`
+
+Environment-specific overrides using `DOTNET_ENVIRONMENT` variable (defaults to "Production"):
+
+```json
+{
+  "Logging": {
+    "MinimumLevel": "Debug"
+  }
+}
+```
+
+To use Development environment:
+```bash
+export DOTNET_ENVIRONMENT=Development
+```
+
+#### Project Configuration (appsettings.json)
+
+Located at: `{cwd}/.claude/dot-hooks/appsettings.json`
+
+Per-project overrides, loaded when `cwd` is available from hook input:
+
+```json
+{
+  "Logging": {
+    "MinimumLevel": "Debug"
+  },
+  "Hooks": {
+    "EnabledHooks": {
+      "post-tool-use": false,
+      "notification": false
+    }
+  },
+  "Plugins": {
+    "EnableGlobalPlugins": false
+  }
+}
+```
+
+**Use Cases:**
+- Disable expensive hooks for specific projects
+- Enable verbose logging for debugging
+- Disable global plugins (use only project-specific plugins)
+
+#### User Configuration (appsettings.json)
+
+Located at: `~/.config/dot-hooks/appsettings.json` (XDG standard, lower priority)
+
+User-level global configuration across all projects:
+
+```json
+{
+  "Logging": {
+    "MinimumLevel": "Warning"
+  },
+  "Hooks": {
+    "EnabledHooks": {
+      "notification": false
+    }
+  }
+}
+```
+
+#### User Override Configuration (appsettings.user.json)
+
+Located at: `~/.claude/dot-hooks/appsettings.user.json` (higher priority than XDG)
+
+User-level overrides with highest user priority:
+
+```json
+{
+  "Hooks": {
+    "EnabledHooks": {
+      "pre-tool-use": false
+    }
+  }
+}
+```
+
+#### Environment Variables
+
+Prefix: `DOTHOOKS_`
+
+Highest priority configuration source. Environment variables override all file-based configuration:
+
+```bash
+export DOTHOOKS_Logging__MinimumLevel=Debug
+export DOTHOOKS_Hooks__EnabledHooks__pre-tool-use=false
+```
+
+**Note**: Use double underscores (`__`) to represent nested configuration sections.
+
+### Configuration Priority
+
+Configuration sources are applied in order from lowest to highest priority:
+
+1. **Base**: `{CLAUDE_PLUGIN_ROOT}/hooks/appsettings.json` (installation defaults)
+2. **Environment**: `{CLAUDE_PLUGIN_ROOT}/hooks/appsettings.{DOTNET_ENVIRONMENT}.json`
+3. **Project**: `{cwd}/.claude/dot-hooks/appsettings.json` (per-project overrides)
+4. **User (XDG)**: `~/.config/dot-hooks/appsettings.json` (user global, lower priority)
+5. **User (Claude)**: `~/.claude/dot-hooks/appsettings.user.json` (user global, higher priority)
+6. **Environment Variables**: `DOTHOOKS_*` (highest priority)
+
+**Example Priority Resolution:**
+
+```
+Base:        Logging.MinimumLevel = "Information"
+Environment: (not set)
+Project:     Logging.MinimumLevel = "Debug"
+User (XDG):  (not set)
+User:        Logging.MinimumLevel = "Warning"
+Env Vars:    DOTHOOKS_Logging__MinimumLevel=Error
+
+Result: Logging.MinimumLevel = "Error" (env var wins)
+```
+
+### Settings Reference
+
+#### LoggingSettings
+
+Controls logging verbosity and output behavior:
+
+```csharp
+public class LoggingSettings
+{
+    public string MinimumLevel { get; set; } = "Information";
+    public string ConsoleThreshold { get; set; } = "Trace";
+}
+```
+
+**Properties:**
+- `MinimumLevel`: Minimum log level to process
+  - Valid values: `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`
+  - Default: `Information`
+  - Affects both console and file logging
+
+- `ConsoleThreshold`: Minimum level for stderr output
+  - Valid values: `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`
+  - Default: `Trace` (all logs go to stderr)
+  - Stdout is reserved for JSON hook responses
+
+#### PathSettings
+
+Customizes directory and file naming conventions:
+
+```csharp
+public class PathSettings
+{
+    public string HooksDirectory { get; set; } = "hooks";
+    public string PluginsDirectory { get; set; } = "plugins";
+    public string ClaudeDirectory { get; set; } = ".claude";
+    public string DotHooksDirectory { get; set; } = "dot-hooks";
+    public string StateDirectory { get; set; } = "state";
+    public string SessionLogFileName { get; set; } = "dot-hooks.log";
+    public string PluginLogDirectory { get; set; } = "plugins";
+}
+```
+
+**Warning**: Only override these if you have a custom installation structure. Changing path settings may break plugin discovery.
+
+#### CompilationSettings
+
+Controls Roslyn plugin compilation behavior:
+
+```csharp
+public class CompilationSettings
+{
+    public string LanguageVersion { get; set; } = "CSharp12";
+}
+```
+
+**Properties:**
+- `LanguageVersion`: C# language version for plugin compilation
+  - Valid values: `CSharp10`, `CSharp11`, `CSharp12`, `CSharp13`, `Latest`
+  - Default: `CSharp12`
+  - Affects syntax features available in plugins
+
+#### HookSettings
+
+Controls hook behavior and selective enablement:
+
+```csharp
+public class HookSettings
+{
+    public int DefaultTimeoutMs { get; set; } = 30000;
+    public Dictionary<string, bool> EnabledHooks { get; set; } = new()
+    {
+        ["pre-tool-use"] = true,
+        ["post-tool-use"] = true,
+        ["user-prompt-submit"] = true,
+        ["notification"] = true,
+        ["stop"] = true,
+        ["subagent-stop"] = true,
+        ["session-start"] = true,
+        ["session-end"] = true,
+        ["pre-compact"] = true
+    };
+}
+```
+
+**Properties:**
+- `DefaultTimeoutMs`: Default hook execution timeout in milliseconds
+  - Default: `30000` (30 seconds)
+  - Future enhancement: per-hook timeout configuration
+
+- `EnabledHooks`: Dictionary of hook names to enabled state
+  - All hooks enabled by default
+  - Set to `false` to disable specific hooks
+  - Disabled hooks are not registered at startup
+  - Use for performance tuning or debugging
+
+**Example: Disable expensive hooks**
+
+```json
+{
+  "Hooks": {
+    "EnabledHooks": {
+      "post-tool-use": false,
+      "notification": false,
+      "stop": false
+    }
+  }
+}
+```
+
+#### PluginSettings
+
+Controls plugin discovery and loading:
+
+```csharp
+public class PluginSettings
+{
+    public bool EnableGlobalPlugins { get; set; } = true;
+    public bool EnableUserPlugins { get; set; } = true;
+}
+```
+
+**Properties:**
+- `EnableGlobalPlugins`: Load plugins from `{CLAUDE_PLUGIN_ROOT}/hooks/plugins/`
+  - Default: `true`
+  - Set to `false` to disable all global plugins
+  - Useful for project-specific plugin-only mode
+
+- `EnableUserPlugins`: Load plugins from `{cwd}/.claude/hooks/dot-hooks/`
+  - Default: `true`
+  - Set to `false` to disable all user/project plugins
+  - Useful for testing global plugins only
+
+**Example: Project uses only project-specific plugins**
+
+```json
+{
+  "Plugins": {
+    "EnableGlobalPlugins": false,
+    "EnableUserPlugins": true
+  }
+}
+```
+
+### Configuration Loading
+
+Configuration is loaded at two points during execution:
+
+#### 1. Startup (Global Configuration)
+
+Occurs once when `Program.cs` starts, before command registration:
+
+```csharp
+var configuration = new ConfigurationBuilder()
+    .AddJsonFile(Path.Combine(hooksDirectory, "appsettings.json"), optional: true)
+    .AddJsonFile(Path.Combine(hooksDirectory, $"appsettings.{environment}.json"), optional: true)
+    .AddJsonFile(Path.Combine(homeDirectory, ".config", "dot-hooks", "appsettings.json"), optional: true)
+    .AddJsonFile(Path.Combine(homeDirectory, ".claude", "dot-hooks", "appsettings.user.json"), optional: true)
+    .AddEnvironmentVariables(prefix: "DOTHOOKS_")
+    .Build();
+```
+
+**Used for:**
+- Logging configuration
+- Hook enable/disable (determines which commands are registered)
+- Global plugin enable/disable
+
+#### 2. Per-Event (Project Configuration)
+
+Occurs at the start of each hook event handler, when `cwd` is available:
+
+```csharp
+if (!string.IsNullOrEmpty(cwd))
+{
+    var projectConfigPath = Path.Combine(cwd, settings.Paths.ClaudeDirectory,
+        settings.Paths.DotHooksDirectory, "appsettings.json");
+
+    if (File.Exists(projectConfigPath))
+    {
+        var projectConfig = new ConfigurationBuilder()
+            .AddConfiguration(configuration)
+            .AddJsonFile(projectConfigPath, optional: true)
+            .Build();
+
+        projectSettings = new DotHooksSettings();
+        projectConfig.Bind(projectSettings);
+    }
+}
+```
+
+**Used for:**
+- Project-specific path overrides
+- Project-specific plugin enable/disable
+- Project-specific logging levels
+
+### Example Configuration Files
+
+Example files are provided in the `hooks/` directory:
+
+1. **appsettings.project.json.example**
+   - Template for project-level configuration
+   - Copy to `{project}/.claude/dot-hooks/appsettings.json`
+   - Includes comments explaining common overrides
+
+2. **appsettings.user.json.example**
+   - Template for user-level configuration
+   - Copy to `~/.claude/dot-hooks/appsettings.user.json`
+   - Includes full settings reference
+
+### Common Configuration Scenarios
+
+#### Scenario 1: Disable Hooks for Performance
+
+Disable non-critical hooks to improve performance:
+
+**File**: `~/.claude/dot-hooks/appsettings.user.json`
+```json
+{
+  "Hooks": {
+    "EnabledHooks": {
+      "post-tool-use": false,
+      "notification": false,
+      "stop": false,
+      "subagent-stop": false
+    }
+  }
+}
+```
+
+#### Scenario 2: Debug Mode for Specific Project
+
+Enable verbose logging for troubleshooting:
+
+**File**: `{project}/.claude/dot-hooks/appsettings.json`
+```json
+{
+  "Logging": {
+    "MinimumLevel": "Debug"
+  }
+}
+```
+
+#### Scenario 3: Project-Specific Plugins Only
+
+Disable global plugins for a project with custom plugin requirements:
+
+**File**: `{project}/.claude/dot-hooks/appsettings.json`
+```json
+{
+  "Plugins": {
+    "EnableGlobalPlugins": false,
+    "EnableUserPlugins": true
+  }
+}
+```
+
+#### Scenario 4: Development Environment Override
+
+Set environment to Development for enhanced logging:
+
+**Shell**:
+```bash
+export DOTNET_ENVIRONMENT=Development
+```
+
+**File**: `{CLAUDE_PLUGIN_ROOT}/hooks/appsettings.Development.json`
+```json
+{
+  "Logging": {
+    "MinimumLevel": "Debug"
+  }
+}
+```
+
+### Configuration Validation
+
+Configuration values are validated at runtime:
+
+- **Log Levels**: Invalid log level strings fall back to `Information`
+- **Hook Names**: Unknown hook names in `EnabledHooks` are ignored
+- **File Paths**: Missing configuration files are silently skipped (all config files are optional)
+- **Type Mismatches**: Invalid JSON or type mismatches use default values
+
+**No Exceptions Thrown**: Configuration errors are logged but do not prevent startup.
+
+### Dependency Injection Integration
+
+Configuration is registered in the DI container for plugin access:
+
+```csharp
+services.AddSingleton<IConfiguration>(configuration);
+services.Configure<DotHooksSettings>(configuration);
+services.Configure<LoggingSettings>(configuration.GetSection("Logging"));
+services.Configure<PathSettings>(configuration.GetSection("Paths"));
+services.Configure<CompilationSettings>(configuration.GetSection("Compilation"));
+services.Configure<HookSettings>(configuration.GetSection("Hooks"));
+services.Configure<PluginSettings>(configuration.GetSection("Plugins"));
+```
+
+**Future Enhancement**: Plugins can inject `IOptions<T>` to access configuration:
+
+```csharp
+public class ConfigurablePlugin(ILogger logger, IOptions<HookSettings> hookSettings) :
+    IHookEventHandler<ToolEventInput, ToolEventOutput>
+{
+    public string Name => "ConfigurablePlugin";
+
+    public Task<ToolEventOutput> HandleAsync(ToolEventInput input, CancellationToken ct)
+    {
+        var timeout = hookSettings.Value.DefaultTimeoutMs;
+        // Use configuration values
+    }
+}
+```
+
 ## Data Models
 
 The strongly-typed data model uses a hierarchical structure with base types and grouped event-specific types.
